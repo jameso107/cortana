@@ -15,6 +15,7 @@ def _osa(script: str, timeout: int = 30) -> subprocess.CompletedProcess:
 
 class Plugin(PluginBase):
     name = "email"
+    capabilities = {"network", "system"}
     description = (
         "Read recent emails, draft replies, and send mail through the macOS Mail app. "
         "Sending always requires explicit user confirmation first."

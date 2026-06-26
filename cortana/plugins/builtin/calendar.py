@@ -6,6 +6,7 @@ from cortana.plugins.base import PluginBase
 
 class Plugin(PluginBase):
     name = "calendar"
+    capabilities = {"system"}
     description = "Read and create macOS Calendar events."
 
     def register(self) -> dict:

@@ -8,6 +8,17 @@ from typing import Any
 class PluginBase(ABC):
     name: str = ""
     description: str = ""
+    # Declared permissions (PRD 8.2). Known values: "network", "filesystem",
+    # "shell", "system", "code". Used for capability disclosure and logging.
+    capabilities: set[str] = set()
+
+    def manifest(self) -> dict:
+        """Self-describing capability manifest for the plugin manager / logs."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "capabilities": sorted(self.capabilities),
+        }
 
     @abstractmethod
     def register(self) -> dict:

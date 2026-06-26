@@ -25,6 +25,7 @@ dependencies = [
     "websockets>=12",        # WebSocket servers (chat + terminal)
     "ptyprocess>=0.7",       # PTY for browser terminal
     "kokoro-onnx>=0.4",      # Kokoro TTS
+    "cryptography>=42",      # Keychain-backed memory encryption at rest
 ]
 
 [project.optional-dependencies]

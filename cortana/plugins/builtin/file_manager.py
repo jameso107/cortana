@@ -7,6 +7,7 @@ from cortana.plugins.base import PluginBase
 
 class Plugin(PluginBase):
     name = "file_manager"
+    capabilities = {"filesystem"}
     description = "Search, read, list, and manage files on the filesystem."
 
     def register(self) -> dict:

@@ -6,6 +6,7 @@ from cortana.plugins.base import PluginBase
 
 class Plugin(PluginBase):
     name = "system_control"
+    capabilities = {"system"}
     description = (
         "Control macOS system settings: volume, brightness, DND, app launch/quit, mute. "
         "Use set_brightness to change screen brightness (0-100). "

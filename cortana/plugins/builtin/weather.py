@@ -6,6 +6,7 @@ from cortana.plugins.base import PluginBase
 
 class Plugin(PluginBase):
     name = "get_weather"
+    capabilities = {"network"}
     description = "Get current and forecast weather for a location."
 
     def register(self) -> dict:

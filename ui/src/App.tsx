@@ -7,11 +7,12 @@ import TerminalPanel from './components/TerminalPanel'
 import SearchPanel from './components/SearchPanel'
 import NotesPanel from './components/NotesPanel'
 import FilesPanel from './components/FilesPanel'
+import MemoryPanel from './components/MemoryPanel'
 import SysStats from './components/SysStats'
 import './App.css'
 
 export type Status = 'idle' | 'listening' | 'thinking' | 'speaking'
-export type Tab = 'chat' | 'terminal' | 'search' | 'notes' | 'files'
+export type Tab = 'chat' | 'terminal' | 'search' | 'notes' | 'files' | 'memory'
 
 export interface Message {
   role: 'user' | 'cortana'
@@ -25,6 +26,7 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'search',   label: 'Search',   icon: '⌕' },
   { id: 'notes',    label: 'Notes',    icon: '≡' },
   { id: 'files',    label: 'Files',    icon: '◫' },
+  { id: 'memory',   label: 'Memory',   icon: '✦' },
 ]
 
 export default function App() {
@@ -150,6 +152,7 @@ export default function App() {
           {activeTab === 'search'   && <SearchPanel />}
           {activeTab === 'notes'    && <NotesPanel />}
           {activeTab === 'files'    && <FilesPanel />}
+          {activeTab === 'memory'   && <MemoryPanel />}
         </div>
 
         {/* Universal input — visible on chat tab */}

@@ -1,15 +1,22 @@
 """Plugin registry — loads, hot-reloads, and dispatches to plugins."""
 from __future__ import annotations
 
+import hashlib
 import importlib
+import importlib.util
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from cortana.plugins.base import PluginBase
 
 log = logging.getLogger(__name__)
+
+APPROVED_FILE = Path.home() / ".cortana" / "approved_plugins.json"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 BUILTIN_PLUGINS = [
     "cortana.plugins.builtin.web_search",
@@ -26,26 +33,109 @@ BUILTIN_PLUGINS = [
     "cortana.plugins.builtin.email",
     "cortana.plugins.builtin.reminders",
     "cortana.plugins.builtin.code_assistant",
+    "cortana.plugins.builtin.briefing",
 ]
 
 
 class PluginRegistry:
     def __init__(self):
         self._plugins: dict[str, PluginBase] = {}
+        self._enabled: set[str] = set()
+        self._disabled: set[str] = set()
 
     async def load_all(self):
+        from cortana.config import get_config
+        cfg = get_config().plugins
+        self._enabled = set(cfg.enabled)
+        self._disabled = set(cfg.disabled)
+
         for module_path in BUILTIN_PLUGINS:
-            self._load_plugin(module_path)
+            self._load_plugin(module_path, trusted=True)
+
+        if cfg.load_third_party:
+            self._load_third_party(Path(cfg.directory).expanduser())
+
+        # Capability disclosure (PRD 8.2): log what each plugin can reach.
+        for p in self._plugins.values():
+            caps = ", ".join(sorted(p.capabilities)) or "none"
+            log.info("plugin %-16s caps=[%s]", p.name, caps)
         log.info("Loaded %d plugins.", len(self._plugins))
 
-    def _load_plugin(self, module_path: str):
+    def _gated(self, name: str) -> bool:
+        """Return True if a plugin name is disabled by config."""
+        if name in self._disabled:
+            log.info("Plugin %s disabled by config — skipping.", name)
+            return True
+        if self._enabled and name not in self._enabled:
+            log.info("Plugin %s not in enabled allowlist — skipping.", name)
+            return True
+        return False
+
+    def _register(self, plugin: PluginBase) -> bool:
+        if self._gated(plugin.name):
+            return False
+        self._plugins[plugin.name] = plugin
+        log.debug("Loaded plugin: %s", plugin.name)
+        return True
+
+    def _load_plugin(self, module_path: str, trusted: bool = False):
         try:
             mod = importlib.import_module(module_path)
-            plugin: PluginBase = mod.Plugin()
-            self._plugins[plugin.name] = plugin
-            log.debug("Loaded plugin: %s", plugin.name)
+            self._register(mod.Plugin())
         except Exception as exc:
             log.warning("Failed to load plugin %s: %s", module_path, exc)
+
+    # ── Third-party plugins (hash-approved; PRD 8.2) ────────────────────────────
+    def _load_third_party(self, directory: Path):
+        if not directory.is_dir():
+            return
+        approved = self._read_approved()
+        changed = False
+        for path in sorted(directory.glob("*.py")):
+            if path.name.startswith("_"):
+                continue
+            digest = _sha256(path)
+            if approved.get(path.name) != digest:
+                log.warning(
+                    "Unsigned/changed third-party plugin %s (sha256=%s) — NOT loaded. "
+                    "Approve it by adding its hash to %s.",
+                    path.name, digest[:12], APPROVED_FILE,
+                )
+                # Record as pending so the user can review and approve.
+                approved.setdefault("_pending", {})[path.name] = digest
+                changed = True
+                continue
+            self._load_from_path(path)
+        if changed:
+            self._write_approved(approved)
+
+    def _load_from_path(self, path: Path):
+        try:
+            spec = importlib.util.spec_from_file_location(f"cortana_ext_{path.stem}", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            self._register(mod.Plugin())
+        except Exception as exc:
+            log.warning("Failed to load third-party plugin %s: %s", path.name, exc)
+
+    @staticmethod
+    def _read_approved() -> dict:
+        try:
+            return json.loads(APPROVED_FILE.read_text())
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _write_approved(data: dict):
+        try:
+            APPROVED_FILE.parent.mkdir(parents=True, exist_ok=True)
+            APPROVED_FILE.write_text(json.dumps(data, indent=2))
+        except Exception as exc:
+            log.debug("Could not write approved-plugins file: %s", exc)
+
+    def manifests(self) -> list[dict]:
+        """All loaded plugins' capability manifests (for a plugin manager UI)."""
+        return [p.manifest() for p in self._plugins.values()]
 
     def get_tool_schemas(self) -> list[dict]:
         return [p.register() for p in self._plugins.values()]

@@ -34,9 +34,18 @@ class MemoryConfig(BaseModel):
     decay_half_life_days: int = 30
 
 
+class PluginsConfig(BaseModel):
+    directory: str = "~/.cortana/plugins"        # third-party plugins
+    builtin_directory: str = "cortana/plugins/builtin"
+    enabled: list[str] = []                       # if non-empty, allowlist (builtins by name)
+    disabled: list[str] = []                      # never load these
+    load_third_party: bool = True                 # load hash-approved plugins from `directory`
+
+
 class AgentConfig(BaseModel):
     max_steps: int = 10          # PRD ceiling is 20; 10 is a safe local default
     inject_facts: bool = True    # add stored user facts to the system prompt
+    reasoning: str = "auto"      # "auto" | "always" | "never" — Qwen3 thinking mode
 
 
 class SafetyConfig(BaseModel):
@@ -44,6 +53,7 @@ class SafetyConfig(BaseModel):
     dry_run_default: bool = False
     terminal_allowlist: list[str] = []
     terminal_blocklist: list[str] = ["rm -rf /", "sudo rm"]
+    encrypt_memory: bool = True  # encrypt structured memory at rest (Keychain-backed)
 
 
 class CortanaConfig(BaseModel):
@@ -51,6 +61,7 @@ class CortanaConfig(BaseModel):
     voice: VoiceConfig = VoiceConfig()
     memory: MemoryConfig = MemoryConfig()
     agent: AgentConfig = AgentConfig()
+    plugins: PluginsConfig = PluginsConfig()
     safety: SafetyConfig = SafetyConfig()
 
     @classmethod

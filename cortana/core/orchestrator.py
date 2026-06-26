@@ -45,6 +45,7 @@ class Orchestrator:
         self.plugins = PluginRegistry()
         self._max_steps = cfg.agent.max_steps
         self._inject_facts = cfg.agent.inject_facts
+        self._reasoning = cfg.agent.reasoning  # "auto" | "always" | "never"
         self._running = False
 
     async def start(self):
@@ -184,9 +185,31 @@ class Orchestrator:
         if context:
             system += f"## Relevant memory\n{context}\n"
 
+        prefix = self._reasoning_prefix(request.text)
+        user = f"{prefix}\n{request.text}" if prefix else request.text
         return [
             {"role": "system", "content": system},
-            # /no_think disables Qwen3's chain-of-thought reasoning mode for fast responses.
-            # The model will still use tools and reason correctly, just without hidden thinking tokens.
-            {"role": "user", "content": f"/no_think\n{request.text}"},
+            {"role": "user", "content": user},
         ]
+
+    # Qwen3 soft-switches: /think enables chain-of-thought, /no_think disables it.
+    _COMPLEX_HINTS = (
+        "plan", "debug", "why", "analyze", "analyse", "fix", "build", "implement",
+        "compare", "step", "calculate", "design", "refactor", "troubleshoot",
+        "explain", "diagnose", "optimize", "strategy", "multiple", "research",
+    )
+
+    def _reasoning_prefix(self, text: str) -> str:
+        """Decide whether to enable Qwen3's thinking mode for this turn."""
+        if self._reasoning == "always":
+            return "/think"
+        if self._reasoning == "never":
+            return "/no_think"
+        # auto: think for complex/multi-step asks, stay fast for simple ones.
+        low = text.lower()
+        complex_task = (
+            len(text.split()) > 24
+            or any(h in low for h in self._COMPLEX_HINTS)
+            or "?" in text and len(text.split()) > 12
+        )
+        return "/think" if complex_task else "/no_think"

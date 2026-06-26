@@ -122,11 +122,38 @@ async def handle_stats(request: web.Request) -> web.Response:
     return web.json_response(data, headers={"Access-Control-Allow-Origin": "*"})
 
 
+async def handle_memory(request: web.Request) -> web.Response:
+    """Return stored facts + recent episodic memories for the memory viewer."""
+    from cortana.memory.store import get_store
+    store = get_store()
+    if store is None:
+        return web.json_response({"facts": {}, "episodic": []},
+                                 headers={"Access-Control-Allow-Origin": "*"})
+    return web.json_response(
+        {"facts": store.all_facts(), "episodic": store.recent_episodic(25)},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+async def handle_forget(request: web.Request) -> web.Response:
+    """Forget a single fact by key."""
+    from cortana.memory.store import get_store
+    key = request.rel_url.query.get("key", "")
+    store = get_store()
+    if store is None or not key:
+        return web.json_response({"ok": False}, status=400,
+                                 headers={"Access-Control-Allow-Origin": "*"})
+    ok = store.forget_fact(key)
+    return web.json_response({"ok": ok}, headers={"Access-Control-Allow-Origin": "*"})
+
+
 async def serve(host: str = "localhost", port: int = 8767):
     app = web.Application()
     app.router.add_get("/files", handle_files)
     app.router.add_get("/file",  handle_read)
     app.router.add_get("/stats", handle_stats)
+    app.router.add_get("/memory", handle_memory)
+    app.router.add_delete("/memory/fact", handle_forget)
 
     # Serve the built React UI.
     # Priority: ~/cortana/ui/dist (live, editable by self_editor) → bundled copy in .app Resources

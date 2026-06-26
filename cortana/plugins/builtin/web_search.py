@@ -6,6 +6,7 @@ from cortana.plugins.base import PluginBase
 
 class Plugin(PluginBase):
     name = "web_search"
+    capabilities = {"network"}
     description = "Search the web privately using a local SearXNG instance."
 
     def register(self) -> dict:

@@ -11,6 +11,7 @@ DEFAULT_FEEDS = [
 
 class Plugin(PluginBase):
     name = "get_news"
+    capabilities = {"network"}
     description = "Fetch latest headlines from RSS feeds."
 
     def register(self) -> dict:

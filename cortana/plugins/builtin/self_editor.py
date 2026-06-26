@@ -51,6 +51,7 @@ def _is_tree_clean() -> bool:
 
 class Plugin(PluginBase):
     name = "self_editor"
+    capabilities = {"shell", "filesystem", "code"}
     description = (
         "Read, write, and manage Cortana's own source code. "
         "Use this to self-improve, fix bugs, add features, or refactor. "
@@ -96,6 +97,10 @@ class Plugin(PluginBase):
                         "command": {
                             "type": "string",
                             "description": "Shell command to run (e.g. 'cd ui && npm run build').",
+                        },
+                        "confirm": {
+                            "type": "boolean",
+                            "description": "Set true ONLY after the user has explicitly approved a destructive command.",
                         },
                         "n": {
                             "type": "integer",
@@ -222,11 +227,25 @@ class Plugin(PluginBase):
         return f"Committed: {head.stdout.strip()}"
 
     async def _shell_run(self, args: dict) -> str:
+        from cortana.core.safety import is_destructive, audit_log
+
         command = args.get("command", "").strip()
         if not command:
             return "Error: command is required."
 
-        log.info("self_editor shell_run: %s", command)
+        destructive = is_destructive(command)
+        confirmed = bool(args.get("confirm"))
+        if destructive and not confirmed:
+            audit_log(command, source="self_editor", allowed=False, destructive=True,
+                      note="blocked: awaiting user confirmation")
+            return (
+                "BLOCKED: this looks like a destructive or privileged command "
+                f"(`{command}`). Confirm with the user in plain language first, then "
+                "retry shell_run with confirm=true. Do not set confirm=true on your own."
+            )
+
+        audit_log(command, source="self_editor", allowed=True, destructive=destructive)
+        log.info("self_editor shell_run%s: %s", " [DESTRUCTIVE]" if destructive else "", command)
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,

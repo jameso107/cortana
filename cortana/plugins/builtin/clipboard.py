@@ -6,6 +6,7 @@ from cortana.plugins.base import PluginBase
 
 class Plugin(PluginBase):
     name = "clipboard"
+    capabilities = {"system"}
     description = "Read or write the macOS clipboard."
 
     def register(self) -> dict:

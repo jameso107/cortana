@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -50,19 +51,27 @@ class MemoryStore:
         self._episodic_path = Path(cfg.memory.episodic_path).expanduser()
         self._db_path = Path(cfg.memory.structured_path).expanduser()
         self._embedding_model = cfg.memory.embedding_model
+        self._half_life_days = cfg.memory.decay_half_life_days
         # llama.cpp exposes an OpenAI-compatible API; reuse the inference host/port.
         self._embeddings_base = f"http://{cfg.inference.host}:{cfg.inference.port}/v1"
+        self._encrypt = cfg.safety.encrypt_memory
+        self._cipher = None
         self._chroma = None
         self._collection = None
         self._embeddings_backend = "none"
 
     async def init(self):
+        from cortana.core.secrets import Cipher
+        self._cipher = Cipher(enabled=self._encrypt)
         self._episodic_path.mkdir(parents=True, exist_ok=True)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_sqlite()
         self._init_chroma()
         _set_store(self)
-        log.info("Memory store initialized (embeddings: %s).", self._embeddings_backend)
+        log.info(
+            "Memory store initialized (embeddings: %s, encryption: %s).",
+            self._embeddings_backend, "on" if self._cipher.active else "off",
+        )
 
     def _init_sqlite(self):
         conn = sqlite3.connect(self._db_path)
@@ -119,16 +128,73 @@ class MemoryStore:
     # ── Episodic memory ────────────────────────────────────────────────────────
 
     async def retrieve(self, query: str, n_results: int = 5) -> str:
-        """Return relevant past context as a formatted string."""
+        """
+        Return relevant past context, re-ranked by similarity *and* recency.
+
+        We over-fetch candidates, then score each by combining vector similarity
+        with an exponential recency decay (half-life from config) so that recent
+        memories outweigh equally-similar older ones (PRD 4.4).
+        """
         if self._collection is None:
             return ""
         try:
-            results = self._collection.query(query_texts=[query], n_results=n_results)
+            candidates = max(n_results * 4, n_results)
+            results = self._collection.query(
+                query_texts=[query],
+                n_results=candidates,
+                include=["documents", "distances", "metadatas"],
+            )
             docs = results.get("documents", [[]])[0]
-            return "\n".join(docs) if docs else ""
+            if not docs:
+                return ""
+            dists = results.get("distances", [[]])[0] or [0.0] * len(docs)
+            metas = results.get("metadatas", [[]])[0] or [{}] * len(docs)
+
+            now = datetime.now(timezone.utc)
+            half_life = max(self._half_life_days, 1)
+            scored = []
+            for doc, dist, meta in zip(docs, dists, metas):
+                similarity = 1.0 - float(dist)          # cosine distance → similarity
+                recency = self._recency_weight(meta.get("ts"), now, half_life)
+                score = similarity * recency
+                scored.append((score, doc))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return "\n".join(doc for _, doc in scored[:n_results])
         except Exception as exc:
             log.debug("Memory retrieval error: %s", exc)
             return ""
+
+    @staticmethod
+    def _recency_weight(ts: str | None, now: datetime, half_life_days: int) -> float:
+        if not ts:
+            return 0.5  # unknown age — neutral-ish
+        try:
+            when = datetime.fromisoformat(ts)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return 0.5
+        age_days = max((now - when).total_seconds() / 86400.0, 0.0)
+        return math.pow(0.5, age_days / half_life_days)
+
+    def recent_episodic(self, n: int = 20) -> list[dict]:
+        """Return the most recent episodic memories (for the memory viewer)."""
+        if self._collection is None:
+            return []
+        try:
+            got = self._collection.get(include=["documents", "metadatas"])
+            ids = got.get("ids", [])
+            docs = got.get("documents", []) or []
+            metas = got.get("metadatas", []) or [{}] * len(docs)
+            rows = [
+                {"ts": (m or {}).get("ts", i), "text": d}
+                for i, d, m in zip(ids, docs, metas)
+            ]
+            rows.sort(key=lambda r: r["ts"], reverse=True)
+            return rows[:n]
+        except Exception as exc:
+            log.debug("recent_episodic error: %s", exc)
+            return []
 
     async def save(self, user_text: str, assistant_text: str):
         """Persist a conversation turn to episodic memory."""
@@ -144,11 +210,17 @@ class MemoryStore:
 
     # ── Structured facts (SQLite) ────────────────────────────────────────────────
 
+    def _enc(self, value: str) -> str:
+        return self._cipher.encrypt(value) if self._cipher else value
+
+    def _dec(self, value: str) -> str:
+        return self._cipher.decrypt(value) if self._cipher else value
+
     def set_fact(self, key: str, value: str):
         conn = sqlite3.connect(self._db_path)
         conn.execute(
             "INSERT OR REPLACE INTO user_facts VALUES (?, ?, ?)",
-            (key.strip().lower(), value, datetime.utcnow().isoformat()),
+            (key.strip().lower(), self._enc(value), datetime.utcnow().isoformat()),
         )
         conn.commit()
         conn.close()
@@ -159,7 +231,7 @@ class MemoryStore:
             "SELECT value FROM user_facts WHERE key=?", (key.strip().lower(),)
         ).fetchone()
         conn.close()
-        return row[0] if row else None
+        return self._dec(row[0]) if row else None
 
     def forget_fact(self, key: str) -> bool:
         conn = sqlite3.connect(self._db_path)
@@ -175,7 +247,7 @@ class MemoryStore:
             "SELECT key, value FROM user_facts ORDER BY updated_at DESC"
         ).fetchall()
         conn.close()
-        return {k: v for k, v in rows}
+        return {k: self._dec(v) for k, v in rows}
 
     def facts_block(self, limit: int = 40) -> str:
         """Formatted facts for system-prompt injection."""

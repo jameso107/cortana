@@ -19,6 +19,7 @@ def _esc(s: str) -> str:
 
 class Plugin(PluginBase):
     name = "reminders"
+    capabilities = {"system"}
     description = "Create, list, and complete reminders in the macOS Reminders app."
 
     def register(self) -> dict:
