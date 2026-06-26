@@ -1,9 +1,17 @@
 import { useEffect, useRef } from 'react'
 import type { Message } from '../App'
 
-export default function ChatPanel({ messages }: { messages: Message[] }) {
+interface Props {
+  messages: Message[]
+  streaming?: string | null
+  toolActivity?: string | null
+}
+
+export default function ChatPanel({ messages, streaming, toolActivity }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, streaming, toolActivity])
 
   return (
     <div className="chat-panel">
@@ -13,6 +21,19 @@ export default function ChatPanel({ messages }: { messages: Message[] }) {
           {m.text}
         </div>
       ))}
+
+      {toolActivity && (
+        <div className="tool-activity">⚙ Using <b>{toolActivity}</b>…</div>
+      )}
+
+      {streaming != null && (
+        <div className="message cortana streaming">
+          <div className="message-label">CORTANA</div>
+          {streaming}
+          <span className="caret">▋</span>
+        </div>
+      )}
+
       <div ref={bottomRef} />
     </div>
   )

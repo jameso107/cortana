@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI
 
@@ -67,6 +67,77 @@ class InferenceClient:
                 for tc in choice.message.tool_calls
             ]
         return text, tool_calls
+
+    async def chat_stream(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[dict]:
+        """
+        Streaming variant. Yields events:
+          {"type": "delta", "text": str}                        — a content token
+          {"type": "done",  "text": str, "tool_calls": list|None}  — final, once
+
+        Content deltas are emitted live. Tool calls are assembled across the
+        stream and returned (fully) in the terminal "done" event, so callers
+        get the same tool_calls shape as chat().
+        """
+        temperature = self._tool_temperature if tools else self._temperature
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        content_parts: list[str] = []
+        tc_acc: dict[int, dict] = {}  # index -> {id, name, arguments}
+
+        try:
+            stream = await self._client.chat.completions.create(**kwargs)
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+                if delta.content:
+                    content_parts.append(delta.content)
+                    yield {"type": "delta", "text": delta.content}
+                for tcd in (delta.tool_calls or []):
+                    acc = tc_acc.setdefault(tcd.index, {"id": None, "name": None, "arguments": ""})
+                    if tcd.id:
+                        acc["id"] = tcd.id
+                    if tcd.function:
+                        if tcd.function.name:
+                            acc["name"] = tcd.function.name
+                        if tcd.function.arguments:
+                            acc["arguments"] += tcd.function.arguments
+        except Exception as exc:
+            log.error("Inference stream error: %s", exc)
+            yield {
+                "type": "done",
+                "text": "I'm having trouble reaching my inference engine. Is llama.cpp running?",
+                "tool_calls": None,
+            }
+            return
+
+        tool_calls = None
+        if tc_acc:
+            tool_calls = []
+            for idx in sorted(tc_acc):
+                acc = tc_acc[idx]
+                tool_calls.append({
+                    "id": acc["id"] or f"call_{idx}",
+                    "type": "function",
+                    "function": {"name": acc["name"], "arguments": acc["arguments"] or "{}"},
+                    "name": acc["name"],
+                    "arguments": acc["arguments"] or "{}",
+                })
+        yield {"type": "done", "text": "".join(content_parts), "tool_calls": tool_calls}
 
     async def embed(self, text: str) -> list[float]:
         """Generate an embedding for memory storage."""

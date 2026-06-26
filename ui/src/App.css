@@ -235,6 +235,22 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--text); ove
   color: var(--text-dim);
   margin-bottom: 6px;
 }
+.message.cortana.streaming { animation: none; }
+.caret {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--cyan);
+  animation: blink 1s step-start infinite;
+}
+.tool-activity {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 14px;
+  letter-spacing: 0.3px;
+  animation: fadeUp 0.25s ease;
+}
+.tool-activity b { color: var(--cyan); font-weight: 600; }
 
 /* ─── Input row ──────────────────────────────────────── */
 .input-row {

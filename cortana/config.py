@@ -18,7 +18,6 @@ class InferenceConfig(BaseModel):
 
 
 class VoiceConfig(BaseModel):
-    wake_word: str = "hey cortana"
     stt_model: str = "medium.en"
     tts_engine: str = "kokoro"
     tts_voice: str = "neutral_male"
@@ -35,6 +34,11 @@ class MemoryConfig(BaseModel):
     decay_half_life_days: int = 30
 
 
+class AgentConfig(BaseModel):
+    max_steps: int = 10          # PRD ceiling is 20; 10 is a safe local default
+    inject_facts: bool = True    # add stored user facts to the system prompt
+
+
 class SafetyConfig(BaseModel):
     confirm_destructive: bool = True
     dry_run_default: bool = False
@@ -46,6 +50,7 @@ class CortanaConfig(BaseModel):
     inference: InferenceConfig = InferenceConfig()
     voice: VoiceConfig = VoiceConfig()
     memory: MemoryConfig = MemoryConfig()
+    agent: AgentConfig = AgentConfig()
     safety: SafetyConfig = SafetyConfig()
 
     @classmethod

@@ -21,6 +21,11 @@ BUILTIN_PLUGINS = [
     "cortana.plugins.builtin.clipboard",
     "cortana.plugins.builtin.web_fetch",
     "cortana.plugins.builtin.news",
+    "cortana.plugins.builtin.self_editor",
+    "cortana.plugins.builtin.memory",
+    "cortana.plugins.builtin.email",
+    "cortana.plugins.builtin.reminders",
+    "cortana.plugins.builtin.code_assistant",
 ]
 
 

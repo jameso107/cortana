@@ -1,12 +1,15 @@
-"""Central orchestrator — routes requests, manages plugin dispatch, and assembles responses."""
+"""Central orchestrator — routes requests, runs the agent loop, assembles responses."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import Awaitable, Callable
 
 log = logging.getLogger(__name__)
+
+# An async callback the orchestrator uses to stream events to a UI.
+# Receives dicts like {"type": "stream_delta", "text": "..."}.
+EmitFn = Callable[[dict], Awaitable[None]]
 
 
 @dataclass
@@ -27,17 +30,21 @@ class Response:
 class Orchestrator:
     """
     Wires together inference, memory, plugins, and voice I/O.
-    Call .start() to begin listening; .handle(request) to process a single turn.
+    Call .start() to initialize; .handle(request) to process a single turn.
     """
 
     def __init__(self):
+        from cortana.config import get_config
         from cortana.inference.client import InferenceClient
         from cortana.memory.store import MemoryStore
         from cortana.plugins.registry import PluginRegistry
 
+        cfg = get_config()
         self.inference = InferenceClient()
         self.memory = MemoryStore()
         self.plugins = PluginRegistry()
+        self._max_steps = cfg.agent.max_steps
+        self._inject_facts = cfg.agent.inject_facts
         self._running = False
 
     async def start(self):
@@ -51,48 +58,90 @@ class Orchestrator:
         self._running = False
         log.info("Cortana stopped.")
 
-    async def handle(self, request: Request) -> Response:
-        """Process one user turn end-to-end."""
+    async def handle(self, request: Request, emit: EmitFn | None = None) -> Response:
+        """
+        Process one user turn through a multi-step ReAct-style agent loop.
+
+        The model may call tools repeatedly (search → fetch → summarize → …),
+        observing each result before deciding the next action, up to max_steps.
+
+        If `emit` is provided, the final natural-language answer is streamed
+        token-by-token via stream_* events; otherwise the full text is returned
+        only in the Response (used by the voice/CLI paths).
+        """
         log.debug("Handling request: %s", request.text)
 
-        # 1. Retrieve relevant memories
         context = await self.memory.retrieve(request.text)
-
-        # 2. Build system prompt with context + available tools
+        facts = self.memory.facts_block() if self._inject_facts else ""
         tools = self.plugins.get_tool_schemas()
-        messages = self._build_messages(request, context)
+        messages = self._build_messages(request, context, facts)
 
-        # 3. Call inference (streaming)
-        response_text, tool_calls = await self.inference.chat(
-            messages=messages,
-            tools=tools,
-        )
+        final_text = ""
+        all_tool_calls: list[dict] = []
 
-        # 4. Dispatch tool calls if any
-        if tool_calls:
-            tool_results = await self.plugins.dispatch(tool_calls)
-            # Second pass with tool results
-            # llama.cpp requires tool_calls entries to have type/function structure
-            formatted_calls = [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                }
-                for tc in tool_calls
-            ]
-            messages += [
-                {"role": "assistant", "content": response_text or "", "tool_calls": formatted_calls},
-                *tool_results,
-            ]
-            response_text, _ = await self.inference.chat(messages=messages)
+        for step in range(self._max_steps):
+            full_text = ""
+            tool_calls = None
+            streamed_any = False
 
-        # 5. Persist to memory
-        await self.memory.save(request.text, response_text)
+            async for ev in self.inference.chat_stream(messages, tools):
+                if ev["type"] == "delta":
+                    if emit:
+                        if not streamed_any:
+                            await emit({"type": "stream_start"})
+                            streamed_any = True
+                        await emit({"type": "stream_delta", "text": ev["text"]})
+                else:  # done
+                    full_text = ev["text"]
+                    tool_calls = ev["tool_calls"]
 
-        return Response(text=response_text, tool_calls=tool_calls or [])
+            if tool_calls:
+                # This step is an action, not the final answer. Any preamble we
+                # streamed isn't the user-facing reply — tell the UI to drop it.
+                if streamed_any and emit:
+                    await emit({"type": "stream_cancel"})
 
-    def _build_messages(self, request: Request, context: str) -> list[dict]:
+                all_tool_calls.extend(tool_calls)
+                if emit:
+                    for tc in tool_calls:
+                        await emit({"type": "tool", "name": tc["name"]})
+
+                tool_results = await self.plugins.dispatch(tool_calls)
+                formatted_calls = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                    for tc in tool_calls
+                ]
+                messages += [
+                    {"role": "assistant", "content": full_text or "", "tool_calls": formatted_calls},
+                    *tool_results,
+                ]
+                continue
+
+            # No tool calls → this is the final answer.
+            final_text = full_text
+            if emit:
+                if not streamed_any:
+                    await emit({"type": "stream_start"})
+                await emit({"type": "stream_end", "text": final_text})
+            break
+        else:
+            log.warning("Agent loop hit max_steps (%d).", self._max_steps)
+            final_text = final_text or (
+                "I wasn't able to finish that within my step limit. "
+                "Could you narrow it down?"
+            )
+            if emit:
+                await emit({"type": "stream_start"})
+                await emit({"type": "stream_end", "text": final_text})
+
+        await self.memory.save(request.text, final_text)
+        return Response(text=final_text, tool_calls=all_tool_calls)
+
+    def _build_messages(self, request: Request, context: str, facts: str) -> list[dict]:
         import os
         repo_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..")
@@ -100,6 +149,16 @@ class Orchestrator:
         system = (
             "You are Cortana, a fully local, privacy-first AI personal assistant "
             "running on the user's Mac. You are capable, direct, and efficient.\n\n"
+
+            "## Tools & autonomy\n"
+            "You can call tools and chain them across multiple steps to complete a "
+            "task: act, observe the result, then decide the next action until done. "
+            "Use tools when they help; answer directly when they don't.\n\n"
+
+            "## Memory\n"
+            "Use the `memory` tool to remember durable facts the user shares (name, "
+            "preferences, projects, tools they use) and to recall or forget them. "
+            "Remember proactively when the user states a lasting preference.\n\n"
 
             "## Self-improvement\n"
             f"Your own source code lives at: {repo_root}\n"
@@ -116,9 +175,12 @@ class Orchestrator:
 
             "## Other capabilities\n"
             "You can control the system (volume, brightness, apps), search the web, "
-            "manage files, run shell commands, take notes, and more via your tools.\n"
+            "manage files, run shell commands, take notes, read/send email, set "
+            "reminders, and more via your tools.\n"
             "Keep responses concise. Confirm before destructive or irreversible actions.\n\n"
         )
+        if facts:
+            system += f"## What you know about the user\n{facts}\n\n"
         if context:
             system += f"## Relevant memory\n{context}\n"
 

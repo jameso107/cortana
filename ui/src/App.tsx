@@ -35,6 +35,8 @@ export default function App() {
   ])
   const [input, setInput]         = useState('')
   const [voiceOn, setVoiceOn]     = useState(false)
+  const [streaming, setStreaming] = useState<string | null>(null)
+  const [toolActivity, setToolActivity] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
@@ -46,8 +48,22 @@ export default function App() {
           const data = JSON.parse(e.data)
           if (data.type === 'status') setStatus(data.value)
           if (data.type === 'message') {
+            // Used by the voice path (non-streamed). Streamed text arrives via stream_*.
             setMessages(prev => [...prev, { role: 'cortana', text: data.text, ts: Date.now() }])
           }
+
+          // ── Streaming agent response ──
+          if (data.type === 'stream_start') { setStreaming(''); setToolActivity(null) }
+          if (data.type === 'stream_delta')  setStreaming(prev => (prev ?? '') + data.text)
+          if (data.type === 'stream_cancel') setStreaming(null)
+          if (data.type === 'stream_end') {
+            const text = data.text ?? streaming ?? ''
+            if (text) setMessages(prev => [...prev, { role: 'cortana', text, ts: Date.now() }])
+            setStreaming(null)
+            setToolActivity(null)
+          }
+          if (data.type === 'tool') setToolActivity(data.name)
+
           // Voice input — show what Cortana heard in the chat as a user message
           if (data.type === 'voice_input') {
             setMessages(prev => [...prev, { role: 'user', text: `🎤 ${data.text}`, ts: Date.now() }])
@@ -129,7 +145,7 @@ export default function App() {
       {/* ── Dock: active panel floats over the brain ── */}
       <main className="dock">
         <div className="panel-area">
-          {activeTab === 'chat'     && <ChatPanel messages={messages} />}
+          {activeTab === 'chat'     && <ChatPanel messages={messages} streaming={streaming} toolActivity={toolActivity} />}
           {activeTab === 'terminal' && <TerminalPanel />}
           {activeTab === 'search'   && <SearchPanel />}
           {activeTab === 'notes'    && <NotesPanel />}

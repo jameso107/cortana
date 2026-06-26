@@ -62,10 +62,16 @@ async def handle(ws: WebSocketServerProtocol, orchestrator):
             await broadcast({"type": "status", "value": "thinking"})
 
             from cortana.core.orchestrator import Request
-            response = await orchestrator.handle(Request(text=text, source="text"))
+
+            # Stream the turn to all UI clients. The final answer arrives
+            # incrementally via stream_* events, so we do NOT also send a
+            # "message" here (that would duplicate it).
+            async def emit(ev: dict):
+                await broadcast(ev)
+
+            await orchestrator.handle(Request(text=text, source="text"), emit=emit)
 
             await broadcast({"type": "status", "value": "idle"})
-            await broadcast({"type": "message", "text": response.text})
 
     except websockets.exceptions.ConnectionClosed:
         pass
