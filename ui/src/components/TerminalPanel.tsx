@@ -3,6 +3,7 @@
  * Cortana terminal WebSocket server on ws://localhost:8766.
  */
 import { useEffect, useRef } from 'react'
+import { WS_TERM } from '../config'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -51,7 +52,7 @@ export default function TerminalPanel() {
 
     // Connect to PTY backend
     const connect = () => {
-      const ws = new WebSocket('ws://localhost:8766')
+      const ws = new WebSocket(WS_TERM)
       wsRef.current = ws
       ws.onopen = () => {
         term.write('\r\n\x1b[36m  Cortana Terminal — connected.\x1b[0m\r\n\r\n')

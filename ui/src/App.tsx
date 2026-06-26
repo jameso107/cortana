@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { WS_CHAT } from './config'
 import BrainOrb from './components/BrainOrb'
 import ChatPanel from './components/ChatPanel'
 import StatusBar from './components/StatusBar'
@@ -39,7 +40,7 @@ export default function App() {
   useEffect(() => {
     const connect = () => {
       try {
-        const ws = new WebSocket('ws://localhost:8765')
+        const ws = new WebSocket(WS_CHAT)
         ws.onopen  = () => setStatus('idle')
         ws.onmessage = (e) => {
           const data = JSON.parse(e.data)

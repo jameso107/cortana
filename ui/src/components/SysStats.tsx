@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { API_BASE } from '../config'
 
 interface Stats {
   cpu: number
@@ -17,7 +18,7 @@ export default function SysStats() {
   useEffect(() => {
     const poll = async () => {
       try {
-        const res = await fetch('/api/stats')
+        const res = await fetch(`${API_BASE}/stats`)
         if (res.ok) setStats(await res.json())
       } catch { /* daemon not up yet */ }
     }

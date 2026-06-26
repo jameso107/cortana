@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { API_BASE } from '../config'
 
 interface FileEntry {
   name: string
@@ -9,7 +10,7 @@ interface FileEntry {
 
 async function listDir(path: string): Promise<FileEntry[]> {
   try {
-    const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`)
+    const res = await fetch(`${API_BASE}/files?path=${encodeURIComponent(path)}`)
     if (!res.ok) return []
     return await res.json()
   } catch {
@@ -19,7 +20,7 @@ async function listDir(path: string): Promise<FileEntry[]> {
 
 async function readFile(path: string): Promise<string> {
   try {
-    const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`)
+    const res = await fetch(`${API_BASE}/file?path=${encodeURIComponent(path)}`)
     if (!res.ok) return '[ Permission denied or binary file ]'
     const data = await res.json()
     return data.content ?? '[ Empty ]'

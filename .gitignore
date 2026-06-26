@@ -29,3 +29,6 @@ ui/.vite/
 # Secrets / env
 .env
 .env.local
+electron/node_modules/
+electron/dist/
+ui/dist/

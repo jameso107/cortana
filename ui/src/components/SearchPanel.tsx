@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { SEARXNG } from '../config'
 
 interface Result {
   title: string
@@ -21,7 +22,7 @@ export default function SearchPanel() {
     setResults([])
     try {
       const res = await fetch(
-        `/searxng/search?q=${encodeURIComponent(q)}&format=json`,
+        `${SEARXNG}/searxng/search?q=${encodeURIComponent(q)}&format=json`,
       )
       if (!res.ok) throw new Error(`SearXNG returned ${res.status}`)
       const data = await res.json()
