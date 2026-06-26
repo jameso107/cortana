@@ -17,23 +17,55 @@ def start(
     voice: bool = typer.Option(False, "--voice", "-v", help="Enable voice I/O"),
     debug: bool = typer.Option(False, "--debug", help="Verbose logging"),
 ):
-    """Start the Cortana assistant."""
-    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
+    """Start the Cortana assistant daemon (chat WebSocket + optional voice)."""
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     asyncio.run(_run(voice=voice))
 
 
 async def _run(voice: bool):
-    from cortana.core.orchestrator import Orchestrator, Request
+    from cortana.core.orchestrator import Orchestrator
+    from cortana.core.ws_server import serve as chat_serve
+    from cortana.core.terminal_server import serve as term_serve
 
     orch = Orchestrator()
     await orch.start()
 
+    console.print("[bold cyan]Cortana[/bold cyan] daemon starting…")
+    console.print("  Chat WebSocket  → [cyan]ws://localhost:8765[/cyan]")
+    console.print("  Terminal server → [cyan]ws://localhost:8766[/cyan]")
+
+    tasks = [
+        asyncio.create_task(chat_serve(orch)),
+        asyncio.create_task(term_serve()),
+    ]
+
     if voice:
         from cortana.voice.pipeline import VoicePipeline
         pipeline = VoicePipeline(orch)
-        await pipeline.start()
-        return
+        tasks.append(asyncio.create_task(pipeline.start()))
+        console.print("  Voice pipeline  → [green]active[/green]")
 
+    console.print("\n[dim]Press Ctrl-C to stop.[/dim]\n")
+    try:
+        await asyncio.gather(*tasks)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        console.print("\n[dim]Cortana stopped.[/dim]")
+
+
+@app.command()
+def chat():
+    """Interactive text chat in the terminal (no UI needed)."""
+    logging.basicConfig(level=logging.WARNING)
+    asyncio.run(_chat_loop())
+
+
+async def _chat_loop():
+    from cortana.core.orchestrator import Orchestrator, Request
+    orch = Orchestrator()
+    await orch.start()
     console.print("[bold cyan]Cortana[/bold cyan] — type your request, Ctrl-C to quit.\n")
     while True:
         try:

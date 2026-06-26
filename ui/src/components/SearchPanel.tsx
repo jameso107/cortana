@@ -21,7 +21,7 @@ export default function SearchPanel() {
     setResults([])
     try {
       const res = await fetch(
-        `http://localhost:8888/search?q=${encodeURIComponent(q)}&format=json`,
+        `/searxng/search?q=${encodeURIComponent(q)}&format=json`,
       )
       if (!res.ok) throw new Error(`SearXNG returned ${res.status}`)
       const data = await res.json()
