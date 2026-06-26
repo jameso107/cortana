@@ -42,10 +42,14 @@ export default function App() {
         ws.onopen  = () => setStatus('idle')
         ws.onmessage = (e) => {
           const data = JSON.parse(e.data)
-          if (data.type === 'status')  setStatus(data.value)
+          if (data.type === 'status') setStatus(data.value)
           if (data.type === 'message') {
             setMessages(prev => [...prev, { role: 'cortana', text: data.text, ts: Date.now() }])
-            setStatus('idle')
+          }
+          // Voice input — show what Cortana heard in the chat as a user message
+          if (data.type === 'voice_input') {
+            setMessages(prev => [...prev, { role: 'user', text: `🎤 ${data.text}`, ts: Date.now() }])
+            setStatus('listening')
           }
         }
         ws.onclose = () => setTimeout(connect, 3000)

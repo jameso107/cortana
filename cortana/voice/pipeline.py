@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 SAMPLE_RATE     = 16000
 CHUNK           = 512           # VAD chunk size (32ms)
-WAKE_PHRASES    = {"hey cortana", "hey, cortana", "a cortana", "hey cortana,"}
+WAKE_PHRASES    = {"hey cortana", "hey, cortana", "hey cortana,"}
 SILENCE_THRESH  = 0.015
 SILENCE_SEC     = 1.2
 MAX_RECORD_SEC  = 30
@@ -146,6 +146,9 @@ class VoicePipeline:
                             silence_count = 0
                             if self._is_wake_word(segment):
                                 log.info("Wake word detected!")
+                                # Drain any leftover audio from the wake phrase itself
+                                while not audio_q.empty():
+                                    audio_q.get_nowait()
                                 utterance = self._record_utterance(audio_q)
                                 if utterance is not None:
                                     asyncio.run_coroutine_threadsafe(
@@ -201,10 +204,21 @@ class VoicePipeline:
         if not text:
             return
         log.info("Command: %s", text)
+
+        from cortana.core.ws_server import broadcast
         from cortana.core.orchestrator import Request
+
+        # Show the user's spoken words in the chat UI
+        await broadcast({"type": "voice_input", "text": text})
+        await broadcast({"type": "status", "value": "thinking"})
+
         response = await self.orchestrator.handle(Request(text=text, source="voice"))
+
         if response.text:
+            await broadcast({"type": "status", "value": "speaking"})
+            await broadcast({"type": "message", "text": response.text})
             await self.speak(response.text)
+            await broadcast({"type": "status", "value": "idle"})
 
     def _transcribe(self, audio: np.ndarray) -> str:
         segs, _ = self._whisper.transcribe(audio, beam_size=5, language="en")

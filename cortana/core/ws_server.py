@@ -1,6 +1,8 @@
 """
 Cortana WebSocket chat server — ws://localhost:8765
-Bridges the browser UI to the orchestrator.
+
+Maintains a set of all connected clients so voice interactions
+(triggered from the mic) are broadcast to the UI in real time.
 """
 from __future__ import annotations
 
@@ -13,29 +15,45 @@ from websockets.server import WebSocketServerProtocol
 
 log = logging.getLogger(__name__)
 
+# All currently connected browser clients
+_clients: set[WebSocketServerProtocol] = set()
+
+
+async def broadcast(msg: dict):
+    """Send a message to every connected UI client."""
+    if not _clients:
+        return
+    raw = json.dumps(msg)
+    await asyncio.gather(
+        *[ws.send(raw) for ws in list(_clients)],
+        return_exceptions=True,
+    )
+
 
 async def handle(ws: WebSocketServerProtocol, orchestrator):
-    log.info("UI client connected.")
+    _clients.add(ws)
+    log.info("UI client connected (%d total).", len(_clients))
     try:
         async for raw in ws:
             data = json.loads(raw)
             if data.get("type") != "message":
                 continue
-
             text = data.get("text", "").strip()
             if not text:
                 continue
 
-            await ws.send(json.dumps({"type": "status", "value": "thinking"}))
+            await broadcast({"type": "status", "value": "thinking"})
 
             from cortana.core.orchestrator import Request
             response = await orchestrator.handle(Request(text=text, source="text"))
 
-            await ws.send(json.dumps({"type": "message", "text": response.text}))
+            await broadcast({"type": "status", "value": "idle"})
+            await broadcast({"type": "message", "text": response.text})
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
-        log.info("UI client disconnected.")
+        _clients.discard(ws)
+        log.info("UI client disconnected (%d remaining).", len(_clients))
 
 
 async def serve(orchestrator, host: str = "localhost", port: int = 8765):
