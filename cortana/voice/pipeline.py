@@ -1,13 +1,9 @@
 """
-Voice pipeline: mic → VAD → keyword spotting → STT → orchestrator → TTS.
+Voice pipeline: mic → VAD → STT → orchestrator → TTS.
 
-Wake word detection uses a two-stage approach:
-  1. Silero VAD detects speech segments (very lightweight, <1% CPU)
-  2. faster-whisper tiny.en transcribes the segment and checks for "hey cortana"
-     (much more accurate than trying to train a custom OWW model)
-
-STT for full utterances uses faster-whisper medium.en for quality.
-TTS uses Kokoro af_sky (American female).
+Activated by the UI toggle button (no wake word).
+When voice_mode is enabled via WebSocket, the pipeline continuously
+listens for speech, transcribes it, and responds.
 """
 from __future__ import annotations
 
@@ -15,20 +11,17 @@ import asyncio
 import logging
 import os
 import queue
-import time
 
 import numpy as np
 import sounddevice as sd
 
 log = logging.getLogger(__name__)
 
-SAMPLE_RATE     = 16000
-CHUNK           = 512           # VAD chunk size (32ms)
-WAKE_PHRASES    = {"hey cortana", "hey, cortana", "hey cortana,"}
-SILENCE_THRESH  = 0.015
-SILENCE_SEC     = 1.2
-MAX_RECORD_SEC  = 30
-PRE_BUFFER_SEC  = 0.5          # audio to keep before wake word is detected
+SAMPLE_RATE    = 16000
+CHUNK          = 512          # 32ms per VAD chunk
+SILENCE_THRESH = 0.015
+SILENCE_SEC    = 1.2
+MAX_RECORD_SEC = 30
 
 
 class VoicePipeline:
@@ -37,12 +30,13 @@ class VoicePipeline:
         self.cfg          = get_config().voice
         self.orchestrator = orchestrator
         self._running     = False
+        self._listening   = False   # voice mode on/off
         self._speaking    = False
-        self._vad         = None   # Silero VAD
-        self._tiny        = None   # whisper tiny.en (wake word check)
-        self._whisper     = None   # whisper medium.en (full STT)
+        self._vad         = None
+        self._whisper     = None
         self._kokoro      = None
         self._loop        = None
+        self._audio_q: queue.Queue[np.ndarray] = queue.Queue()
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -55,13 +49,13 @@ class VoicePipeline:
             asyncio.to_thread(self._load_tts),
         )
         self._running = True
-        log.info("Voice pipeline ready — say 'Hey Cortana'")
-        await asyncio.to_thread(self._listen_loop)
+        log.info("Voice pipeline ready — toggle via UI button.")
+        await asyncio.to_thread(self._mic_loop)
 
     def _load_vad(self):
         import torch
         torch.hub.set_dir(os.path.expanduser("~/.cortana/models/torch_hub"))
-        model, utils = torch.hub.load(
+        model, _ = torch.hub.load(
             repo_or_dir="snakers4/silero-vad",
             model="silero_vad",
             force_reload=False,
@@ -69,18 +63,12 @@ class VoicePipeline:
             onnx=True,
         )
         self._vad = model
-        self._vad_utils = utils
         log.info("Silero VAD loaded.")
-
-        # Load tiny whisper for wake word detection
-        from faster_whisper import WhisperModel
-        self._tiny = WhisperModel("tiny.en", device="cpu", compute_type="int8")
-        log.info("Whisper tiny.en loaded for wake word detection.")
 
     def _load_whisper(self):
         from faster_whisper import WhisperModel
         self._whisper = WhisperModel("medium.en", device="cpu", compute_type="int8")
-        log.info("Whisper medium.en loaded for STT.")
+        log.info("Whisper medium.en loaded.")
 
     def _load_tts(self):
         tts_dir = os.path.expanduser("~/.cortana/models/tts")
@@ -96,105 +84,74 @@ class VoicePipeline:
         except Exception as exc:
             log.warning("Kokoro failed (%s) — using macOS say.", exc)
 
-    # ── Listen loop ───────────────────────────────────────────────────────────
+    # ── Toggle ────────────────────────────────────────────────────────────────
 
-    def _listen_loop(self):
-        audio_q: queue.Queue[np.ndarray] = queue.Queue()
-        pre_buffer: list[np.ndarray] = []     # rolling window before wake word
-        pre_max = int(PRE_BUFFER_SEC * SAMPLE_RATE / CHUNK)
+    def set_listening(self, enabled: bool):
+        self._listening = enabled
+        log.info("Voice mode %s.", "ON" if enabled else "OFF")
 
+    # ── Mic loop ──────────────────────────────────────────────────────────────
+
+    def _mic_loop(self):
+        """Keep mic open permanently; feed audio to queue only when listening."""
         def mic_cb(indata, frames, t, status):
-            if not self._speaking:
-                audio_q.put(indata[:, 0].copy())
+            if self._listening and not self._speaking:
+                self._audio_q.put(indata[:, 0].copy())
 
-        log.info("Mic open — listening for 'Hey Cortana'")
         with sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="float32",
             blocksize=CHUNK, callback=mic_cb,
         ):
-            speech_frames: list[np.ndarray] = []
-            in_speech = False
-            silence_count = 0
-            silence_needed = int(0.5 * SAMPLE_RATE / CHUNK)
-
+            log.info("Mic open.")
             while self._running:
-                try:
-                    chunk = audio_q.get(timeout=1.0)
-                except queue.Empty:
-                    continue
-
-                # VAD
-                import torch
-                t_chunk = torch.from_numpy(chunk)
-                speech_prob = float(self._vad(t_chunk, SAMPLE_RATE).item())
-
-                if speech_prob > 0.5:
-                    if not in_speech:
-                        in_speech = True
-                        speech_frames = list(pre_buffer)  # include pre-buffer
-                    speech_frames.append(chunk)
-                    silence_count = 0
+                if self._listening:
+                    self._process_one_utterance()
                 else:
-                    if in_speech:
-                        silence_count += 1
-                        speech_frames.append(chunk)
-                        if silence_count >= silence_needed:
-                            # End of speech — check for wake word
-                            segment = np.concatenate(speech_frames)
-                            in_speech = False
-                            speech_frames = []
-                            silence_count = 0
-                            if self._is_wake_word(segment):
-                                log.info("Wake word detected!")
-                                # Drain any leftover audio from the wake phrase itself
-                                while not audio_q.empty():
-                                    audio_q.get_nowait()
-                                utterance = self._record_utterance(audio_q)
-                                if utterance is not None:
-                                    asyncio.run_coroutine_threadsafe(
-                                        self._handle_utterance(utterance), self._loop
-                                    )
+                    # Drain any queued audio from before voice mode was off
+                    while not self._audio_q.empty():
+                        self._audio_q.get_nowait()
+                    import time
+                    time.sleep(0.1)
 
-                # Maintain pre-buffer
-                pre_buffer.append(chunk)
-                if len(pre_buffer) > pre_max:
-                    pre_buffer.pop(0)
+    def _process_one_utterance(self):
+        """Record one utterance (VAD-gated) and dispatch it."""
+        import torch
 
-    def _is_wake_word(self, audio: np.ndarray) -> bool:
-        """Check if audio contains 'hey cortana' using tiny whisper."""
-        try:
-            segs, _ = self._tiny.transcribe(audio, beam_size=1, language="en",
-                                             vad_filter=False)
-            text = " ".join(s.text for s in segs).strip().lower()
-            log.debug("Wake word check: '%s'", text)
-            return any(phrase in text for phrase in WAKE_PHRASES)
-        except Exception as exc:
-            log.debug("Wake word check error: %s", exc)
-            return False
-
-    def _record_utterance(self, audio_q: queue.Queue) -> np.ndarray | None:
-        """Record until silence after wake word."""
-        log.info("Listening for command…")
-        frames: list[np.ndarray] = []
-        silent_chunks = 0
-        max_chunks    = int(MAX_RECORD_SEC * SAMPLE_RATE / CHUNK)
+        speech_frames: list[np.ndarray] = []
+        in_speech     = False
+        silence_count = 0
         sil_needed    = int(SILENCE_SEC * SAMPLE_RATE / CHUNK)
+        max_chunks    = int(MAX_RECORD_SEC * SAMPLE_RATE / CHUNK)
 
-        while len(frames) < max_chunks:
+        while self._listening and len(speech_frames) < max_chunks:
             try:
-                chunk = audio_q.get(timeout=2.0)
+                chunk = self._audio_q.get(timeout=0.5)
             except queue.Empty:
-                break
-            frames.append(chunk)
-            rms = float(np.sqrt(np.mean(chunk ** 2)))
-            if rms < SILENCE_THRESH:
-                silent_chunks += 1
-                if silent_chunks >= sil_needed and len(frames) > 8:
+                # If we were in speech and timed out, treat as end
+                if in_speech and silence_count > 0:
                     break
-            else:
-                silent_chunks = 0
+                continue
 
-        return np.concatenate(frames) if frames else None
+            t_chunk     = torch.from_numpy(chunk)
+            speech_prob = float(self._vad(t_chunk, SAMPLE_RATE).item())
+
+            if speech_prob > 0.5:
+                in_speech = True
+                speech_frames.append(chunk)
+                silence_count = 0
+            elif in_speech:
+                speech_frames.append(chunk)
+                silence_count += 1
+                if silence_count >= sil_needed:
+                    break  # end of utterance
+
+        if not speech_frames or not in_speech:
+            return
+
+        audio = np.concatenate(speech_frames)
+        asyncio.run_coroutine_threadsafe(
+            self._handle_utterance(audio), self._loop
+        )
 
     # ── Dispatch + TTS ────────────────────────────────────────────────────────
 
@@ -203,12 +160,11 @@ class VoicePipeline:
         text = text.strip()
         if not text:
             return
-        log.info("Command: %s", text)
+        log.info("Heard: %s", text)
 
         from cortana.core.ws_server import broadcast
         from cortana.core.orchestrator import Request
 
-        # Show the user's spoken words in the chat UI
         await broadcast({"type": "voice_input", "text": text})
         await broadcast({"type": "status", "value": "thinking"})
 
@@ -218,7 +174,7 @@ class VoicePipeline:
             await broadcast({"type": "status", "value": "speaking"})
             await broadcast({"type": "message", "text": response.text})
             await self.speak(response.text)
-            await broadcast({"type": "status", "value": "idle"})
+            await broadcast({"type": "status", "value": "listening"})
 
     def _transcribe(self, audio: np.ndarray) -> str:
         segs, _ = self._whisper.transcribe(audio, beam_size=5, language="en")

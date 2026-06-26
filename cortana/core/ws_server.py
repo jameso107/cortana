@@ -1,8 +1,9 @@
 """
 Cortana WebSocket chat server — ws://localhost:8765
 
-Maintains a set of all connected clients so voice interactions
-(triggered from the mic) are broadcast to the UI in real time.
+Handles:
+  - type:"message"    — text chat from UI
+  - type:"voice_mode" — toggle voice listening on/off
 """
 from __future__ import annotations
 
@@ -15,12 +16,16 @@ from websockets.server import WebSocketServerProtocol
 
 log = logging.getLogger(__name__)
 
-# All currently connected browser clients
 _clients: set[WebSocketServerProtocol] = set()
+_voice_pipeline = None   # set by cli.py when voice is active
+
+
+def set_voice_pipeline(pipeline):
+    global _voice_pipeline
+    _voice_pipeline = pipeline
 
 
 async def broadcast(msg: dict):
-    """Send a message to every connected UI client."""
     if not _clients:
         return
     raw = json.dumps(msg)
@@ -36,8 +41,20 @@ async def handle(ws: WebSocketServerProtocol, orchestrator):
     try:
         async for raw in ws:
             data = json.loads(raw)
-            if data.get("type") != "message":
+            msg_type = data.get("type")
+
+            if msg_type == "voice_mode":
+                enabled = bool(data.get("enabled", False))
+                if _voice_pipeline is not None:
+                    _voice_pipeline.set_listening(enabled)
+                status = "listening" if enabled else "idle"
+                await broadcast({"type": "status", "value": status})
+                await broadcast({"type": "voice_mode_ack", "enabled": enabled})
                 continue
+
+            if msg_type != "message":
+                continue
+
             text = data.get("text", "").strip()
             if not text:
                 continue
@@ -49,6 +66,7 @@ async def handle(ws: WebSocketServerProtocol, orchestrator):
 
             await broadcast({"type": "status", "value": "idle"})
             await broadcast({"type": "message", "text": response.text})
+
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:

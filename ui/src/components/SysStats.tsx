@@ -1,27 +1,44 @@
 import { useState, useEffect } from 'react'
 
-interface Stats { cpu: number; mem: number; model: string; uptime: string }
+interface Stats {
+  cpu: number
+  ram_pct: number
+  ram_used_gb: number
+  ram_total_gb: number
+  model: string
+  uptime: string
+}
+
+const DEFAULT: Stats = { cpu: 0, ram_pct: 0, ram_used_gb: 0, ram_total_gb: 0, model: '—', uptime: '—' }
 
 export default function SysStats() {
-  const [stats, setStats] = useState<Stats>({ cpu: 0, mem: 0, model: 'Qwen3-27B Q6', uptime: '—' })
+  const [stats, setStats] = useState<Stats>(DEFAULT)
 
   useEffect(() => {
-    // Poll backend for stats when available; show simulated idle animation otherwise
-    const tick = () => {
-      setStats(prev => ({
-        ...prev,
-        cpu: Math.max(2, Math.min(30, prev.cpu + (Math.random() - 0.5) * 4)),
-        mem: 34 + Math.sin(Date.now() / 8000) * 3,
-      }))
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/stats')
+        if (res.ok) setStats(await res.json())
+      } catch { /* daemon not up yet */ }
     }
-    const id = setInterval(tick, 2000)
+    poll()
+    const id = setInterval(poll, 3000)
     return () => clearInterval(id)
   }, [])
 
   const rows = [
-    { label: 'CPU',   val: `${stats.cpu.toFixed(0)}%`,  pct: stats.cpu / 100 },
-    { label: 'RAM',   val: `${stats.mem.toFixed(0)}%`,  pct: stats.mem / 100 },
-    { label: 'MODEL', val: stats.model,                  pct: null },
+    {
+      label: 'CPU',
+      val: `${stats.cpu.toFixed(1)}%`,
+      pct: stats.cpu / 100,
+    },
+    {
+      label: 'RAM',
+      val: `${stats.ram_used_gb.toFixed(1)} / ${stats.ram_total_gb.toFixed(0)} GB`,
+      pct: stats.ram_pct / 100,
+    },
+    { label: 'MODEL',  val: stats.model,  pct: null },
+    { label: 'UPTIME', val: stats.uptime, pct: null },
   ]
 
   return (

@@ -29,6 +29,7 @@ async def _run(voice: bool):
     from cortana.core.orchestrator import Orchestrator
     from cortana.core.ws_server import serve as chat_serve
     from cortana.core.terminal_server import serve as term_serve
+    from cortana.core.file_server import serve as file_serve
 
     orch = Orchestrator()
     await orch.start()
@@ -36,15 +37,19 @@ async def _run(voice: bool):
     console.print("[bold cyan]Cortana[/bold cyan] daemon starting…")
     console.print("  Chat WebSocket  → [cyan]ws://localhost:8765[/cyan]")
     console.print("  Terminal server → [cyan]ws://localhost:8766[/cyan]")
+    console.print("  File API        → [cyan]http://localhost:8767[/cyan]")
 
     tasks = [
         asyncio.create_task(chat_serve(orch)),
         asyncio.create_task(term_serve()),
+        asyncio.create_task(file_serve()),
     ]
 
     if voice:
         from cortana.voice.pipeline import VoicePipeline
+        from cortana.core.ws_server import set_voice_pipeline
         pipeline = VoicePipeline(orch)
+        set_voice_pipeline(pipeline)
         tasks.append(asyncio.create_task(pipeline.start()))
         console.print("  Voice pipeline  → [green]active[/green]")
 

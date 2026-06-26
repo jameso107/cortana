@@ -224,6 +224,29 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--text); ove
 }
 .send-btn:hover { opacity: 0.85; box-shadow: var(--glow); }
 
+.mic-btn {
+  background: transparent;
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 6px 10px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.mic-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.mic-btn.active {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  box-shadow: var(--glow);
+  animation: mic-pulse 1.8s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 6px var(--cyan-mid); }
+  50%       { box-shadow: 0 0 14px var(--cyan), 0 0 28px var(--cyan-mid); }
+}
+
 /* ─── Terminal panel ─────────────────────────────────── */
 .terminal-panel {
   flex: 1;
@@ -436,6 +459,37 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--text); ove
 .file-item.dir { color: var(--cyan); }
 .file-icon { font-size: 14px; width: 20px; text-align: center; flex-shrink: 0; }
 .file-size { margin-left: auto; color: var(--text-dim); font-size: 10px; }
+
+.files-preview {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  overflow: hidden;
+}
+.files-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-dim);
+  gap: 10px;
+}
+.files-preview-content {
+  flex: 1;
+  overflow: auto;
+  padding: 14px;
+  font-family: var(--ff);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-hi) transparent;
+}
 
 /* ─── Sys stats ──────────────────────────────────────── */
 .sys-stats {

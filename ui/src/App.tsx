@@ -32,7 +32,8 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([
     { role: 'cortana', text: 'Cortana online. Systems nominal. How can I assist you?', ts: Date.now() },
   ])
-  const [input, setInput] = useState('')
+  const [input, setInput]         = useState('')
+  const [voiceOn, setVoiceOn]     = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
@@ -49,7 +50,9 @@ export default function App() {
           // Voice input — show what Cortana heard in the chat as a user message
           if (data.type === 'voice_input') {
             setMessages(prev => [...prev, { role: 'user', text: `🎤 ${data.text}`, ts: Date.now() }])
-            setStatus('listening')
+          }
+          if (data.type === 'voice_mode_ack') {
+            setVoiceOn(data.enabled)
           }
         }
         ws.onclose = () => setTimeout(connect, 3000)
@@ -59,6 +62,14 @@ export default function App() {
     connect()
     return () => wsRef.current?.close()
   }, [])
+
+  const toggleVoice = () => {
+    const next = !voiceOn
+    setVoiceOn(next)
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'voice_mode', enabled: next }))
+    }
+  }
 
   const send = () => {
     const text = input.trim()
@@ -129,6 +140,13 @@ export default function App() {
               placeholder="Ask Cortana anything…"
               autoFocus
             />
+            <button
+              className={`mic-btn ${voiceOn ? 'active' : ''}`}
+              onClick={toggleVoice}
+              title={voiceOn ? 'Voice mode ON — click to disable' : 'Click to enable voice mode'}
+            >
+              {voiceOn ? '🎙' : '🎤'}
+            </button>
             <button className="send-btn" onClick={send}>Send</button>
           </div>
         )}

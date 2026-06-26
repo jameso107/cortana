@@ -10,6 +10,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: path => path.replace(/^\/searxng/, ''),
       },
+      '/api': {
+        target: 'http://localhost:8767',
+        changeOrigin: true,
+        rewrite: path => path.replace(/^\/api/, ''),
+      },
     },
   },
 })
