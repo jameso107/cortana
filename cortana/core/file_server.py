@@ -128,9 +128,12 @@ async def serve(host: str = "localhost", port: int = 8767):
     app.router.add_get("/file",  handle_read)
     app.router.add_get("/stats", handle_stats)
 
-    # Serve the built React UI if dist/ exists next to the project root
+    # Serve the built React UI.
+    # Priority: ~/cortana/ui/dist (live, editable by self_editor) → bundled copy in .app Resources
     import pathlib
-    dist = pathlib.Path(__file__).parent.parent.parent / "ui" / "dist"
+    live_dist    = pathlib.Path.home() / "cortana" / "ui" / "dist"
+    bundled_dist = pathlib.Path(__file__).parent.parent.parent / "ui" / "dist"
+    dist = live_dist if live_dist.exists() else bundled_dist
     if dist.exists():
         app.router.add_static("/assets", dist / "assets")
 
