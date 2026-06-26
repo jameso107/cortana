@@ -137,8 +137,7 @@ async def serve(host: str = "localhost", port: int = 8767):
     if dist.exists():
         app.router.add_static("/assets", dist / "assets")
 
-        # Inject runtime config so the UI knows the right ports
-        _html_template = (dist / "index.html").read_text()
+        _index_path = dist / "index.html"
         _config_snippet = """<script>
 window.CORTANA_CONFIG = {
   wsChat:     "ws://127.0.0.1:8765",
@@ -147,11 +146,13 @@ window.CORTANA_CONFIG = {
   searxng:    "http://127.0.0.1:8888",
 };
 </script>"""
-        _injected_html = _html_template.replace("</head>", _config_snippet + "\n</head>", 1)
 
         async def index(req):
+            # Read fresh each request so npm rebuilds take effect without restart
+            html = _index_path.read_text()
+            injected = html.replace("</head>", _config_snippet + "\n</head>", 1)
             return web.Response(
-                text=_injected_html,
+                text=injected,
                 content_type="text/html",
                 headers={"Access-Control-Allow-Origin": "*"},
             )
