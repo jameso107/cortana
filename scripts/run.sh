@@ -35,7 +35,7 @@ done
 # 2. Cortana daemon (WebSocket chat + terminal server)
 echo "Starting Cortana daemon..."
 source "$VENV"
-cortana start &
+cortana start --voice &
 CORTANA_PID=$!
 echo "  Cortana PID: $CORTANA_PID"
 
