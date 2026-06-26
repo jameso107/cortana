@@ -88,12 +88,15 @@ class Orchestrator:
             "You are Cortana, a fully local, privacy-first AI personal assistant. "
             "You are capable, direct, and efficient. You have access to the user's "
             "system and can execute commands, manage files, search the web, and more. "
-            "Always confirm before executing destructive actions.\n\n"
+            "Always confirm before executing destructive actions. "
+            "Keep responses concise and to the point.\n\n"
         )
         if context:
             system += f"Relevant memory:\n{context}\n"
 
         return [
             {"role": "system", "content": system},
-            {"role": "user", "content": request.text},
+            # /no_think disables Qwen3's chain-of-thought reasoning mode for fast responses.
+            # The model will still use tools and reason correctly, just without hidden thinking tokens.
+            {"role": "user", "content": f"/no_think\n{request.text}"},
         ]
