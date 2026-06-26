@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Node / UI
+ui/node_modules/
+ui/dist/
+ui/.vite/
+
+# Local runtime
+~/.cortana/
+*.db
+*.log
+*.jsonl
+
+# Models (large binary)
+*.gguf
+*.bin
+
+# macOS
+.DS_Store
+
+# Secrets / env
+.env
+.env.local

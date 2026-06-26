@@ -1,0 +1,41 @@
+# Cortana configuration
+inference:
+  host: localhost
+  port: 8080
+  model: Qwen3-27B-Instruct-Q6_K_M.gguf
+  context_window: 16384
+  gpu_layers: 99
+  threads: 8
+  temperature: 0.7
+  tool_temperature: 0.2
+  flash_attention: true
+
+voice:
+  wake_word: "hey cortana"
+  stt_model: medium.en        # or large-v3
+  tts_engine: kokoro          # or macos
+  tts_voice: neutral_male
+  vad_threshold: 0.5
+  silence_ms: 800             # ms of silence to end utterance
+  push_to_talk_hotkey: "cmd+space"
+
+memory:
+  episodic_path: ~/.cortana/memory/chroma
+  structured_path: ~/.cortana/memory/cortana.db
+  embedding_model: nomic-embed-text
+  context_tokens: 2048        # tokens reserved for memory injection
+  decay_half_life_days: 30
+
+plugins:
+  directory: ~/.cortana/plugins
+  builtin_directory: cortana/plugins/builtin
+
+logging:
+  level: INFO
+  path: ~/.cortana/logs/cortana.log
+
+safety:
+  confirm_destructive: true
+  dry_run_default: false
+  terminal_allowlist: []
+  terminal_blocklist: ["rm -rf /", "sudo rm"]
