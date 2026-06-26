@@ -70,26 +70,20 @@ class Plugin(PluginBase):
         # ── Brightness ────────────────────────────────────────
         if action == "set_brightness":
             level = max(0, min(100, int(float(value)))) if value else 100
-            # Normalize to 0.0-1.0 for osascript
-            norm = level / 100.0
-            script = f'tell application "System Events" to set brightness of display 1 to {norm}'
-            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-            if result.returncode != 0:
-                # Fallback: use brightness CLI if installed
-                subprocess.run(["brightness", str(norm)], capture_output=True)
-            return f"Brightness set to {level}%."
+            # Press brightness-up (key 144) or brightness-down (key 145) 16 times
+            # to sweep full range, then adjust. Simpler: hold key for the right count.
+            # Strategy: tap brightness-down 16x to go to 0, then tap brightness-up N times.
+            steps = round(level / 6.25)  # 16 steps cover 0-100%
+            down16 = " & ".join(['key code 145'] * 16)
+            up_n   = " & ".join(['key code 144'] * steps) if steps > 0 else ""
+            script = f'tell application "System Events"\n  key code 145\n  {down16}\nend tell'
+            if up_n:
+                script += f'\ntell application "System Events"\n  {up_n}\nend tell'
+            subprocess.run(["osascript", "-e", script], capture_output=True)
+            return f"Brightness set to ~{level}%."
 
         if action == "get_brightness":
-            r = subprocess.run(
-                ["osascript", "-e",
-                 'tell application "System Events" to get brightness of display 1'],
-                capture_output=True, text=True,
-            )
-            try:
-                pct = round(float(r.stdout.strip()) * 100)
-                return f"Brightness is {pct}%."
-            except ValueError:
-                return "Could not read brightness."
+            return "Brightness level not readable directly; use set_brightness to adjust."
 
         # ── Apps ──────────────────────────────────────────────
         if action == "launch_app":

@@ -72,8 +72,17 @@ class Orchestrator:
         if tool_calls:
             tool_results = await self.plugins.dispatch(tool_calls)
             # Second pass with tool results
+            # llama.cpp requires tool_calls entries to have type/function structure
+            formatted_calls = [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                }
+                for tc in tool_calls
+            ]
             messages += [
-                {"role": "assistant", "content": response_text, "tool_calls": tool_calls},
+                {"role": "assistant", "content": response_text or "", "tool_calls": formatted_calls},
                 *tool_results,
             ]
             response_text, _ = await self.inference.chat(messages=messages)

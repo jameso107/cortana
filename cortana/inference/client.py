@@ -55,6 +55,12 @@ class InferenceClient:
             tool_calls = [
                 {
                     "id": tc.id,
+                    "type": "function",       # required by llama.cpp on the second pass
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                    # also expose flat keys for dispatcher convenience
                     "name": tc.function.name,
                     "arguments": tc.function.arguments,
                 }
