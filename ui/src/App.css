@@ -22,65 +22,118 @@
 
 html, body, #root { height: 100%; background: var(--bg); color: var(--text); overflow: hidden; }
 
-/* ─── App shell ──────────────────────────────────────── */
+/* ─── App shell — brain-centric ──────────────────────── */
 .app {
-  display: grid;
-  grid-template-columns: 340px 1fr;
-  height: 100vh;
-}
-
-/* ─── Left column ────────────────────────────────────── */
-.left-col {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0;
-  background: radial-gradient(ellipse at 50% 40%, #000d22 0%, #000408 100%);
-  border-right: 1px solid var(--border);
-  overflow: hidden;
   position: relative;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 45%, #00091c 0%, #000408 70%);
 }
 
-/* Hex-grid bg */
-.left-col::before {
+/* Hex-grid ambiance over the whole window */
+.app::before {
   content: '';
   position: absolute;
   inset: 0;
   background-image:
-    repeating-linear-gradient(60deg,  #00d4ff07 0, transparent 1px, transparent 30px, #00d4ff07 31px),
-    repeating-linear-gradient(-60deg, #00d4ff07 0, transparent 1px, transparent 30px, #00d4ff07 31px);
-  background-size: 34px 58px;
+    repeating-linear-gradient(60deg,  #00d4ff06 0, transparent 1px, transparent 34px, #00d4ff06 35px),
+    repeating-linear-gradient(-60deg, #00d4ff06 0, transparent 1px, transparent 34px, #00d4ff06 35px);
+  background-size: 40px 68px;
   pointer-events: none;
+  z-index: 0;
 }
 
-.cortana-wordmark {
-  padding: 20px 0 4px;
-  font-size: 11px;
-  letter-spacing: 8px;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  position: relative;
+/* ─── Brain background — the large centered core ─────── */
+.brain-bg {
+  position: absolute;
+  inset: 0;
   z-index: 1;
-}
-.wm-c { color: var(--cyan); font-size: 14px; }
-
-/* ─── Right column ───────────────────────────────────── */
-.right-col {
   display: flex;
-  flex-direction: column;
-  height: 100vh;
-  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s;
+}
+/* In panel mode, nudge the brain toward the open space on the left */
+.app.mode-panel .brain-bg {
+  transform: translateX(-26%) scale(0.82);
+  opacity: 0.78;
+}
+.app.mode-chat .brain-bg {
+  transform: translateX(-12%) scale(1);
+  opacity: 1;
 }
 
-/* ─── Top bar ────────────────────────────────────────── */
-.top-bar {
+/* ─── Top HUD ────────────────────────────────────────── */
+.hud-top {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 4;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  flex-shrink: 0;
+  padding: 14px 24px;
+  -webkit-app-region: drag;
+  background: linear-gradient(180deg, #000408cc 0%, transparent 100%);
+}
+.hud-top .tab-bar { -webkit-app-region: no-drag; }
+
+.hud-brand {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font-size: 14px;
+  letter-spacing: 8px;
+  color: var(--text);
+  text-transform: uppercase;
+  padding-left: 70px;   /* clear the macOS traffic lights */
+}
+.wm-c { color: var(--cyan); font-size: 17px; text-shadow: var(--glow-sm); }
+.hud-brand .status-bar { padding: 0; margin-left: 6px; padding-left: 18px; border-left: 1px solid var(--border-hi); }
+
+/* ─── Stats HUD (corner) ─────────────────────────────── */
+.stats-hud {
+  position: absolute;
+  bottom: 22px;
+  left: 24px;
+  z-index: 4;
+  width: 240px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #00060fb0;
+  backdrop-filter: blur(8px);
+}
+
+/* ─── Dock — floating glass panel for active tab ─────── */
+.dock {
+  position: absolute;
+  top: 64px;
+  bottom: 22px;
+  right: 22px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-hi);
+  border-radius: 12px;
+  background: #00060fcc;
+  backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: 0 0 60px #00050d88, inset 0 0 30px #00d4ff08;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1), background 0.4s;
+}
+/* Chat: narrower & more translucent so the brain dominates */
+.app.mode-chat .dock {
+  width: 40%;
+  min-width: 380px;
+  background: #00060fa6;
+}
+/* Terminal/files/search: wider & more opaque for readability */
+.app.mode-panel .dock {
+  width: 58%;
+  min-width: 520px;
+  background: #00060fef;
 }
 
 /* ─── Status bar ─────────────────────────────────────── */

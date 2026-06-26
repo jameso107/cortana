@@ -92,35 +92,42 @@ export default function App() {
     }
   }
 
+  const isChat = activeTab === 'chat'
+
   return (
-    <div className="app">
-      {/* ── Left column: orb + system stats ── */}
-      <aside className="left-col">
-        <div className="cortana-wordmark">
-          <span className="wm-c">C</span>ORTANA
-        </div>
+    <div className={`app ${isChat ? 'mode-chat' : 'mode-panel'}`}>
+      {/* ── Brain: large, centered, the living core ── */}
+      <div className="brain-bg">
         <BrainOrb status={status} />
-        <SysStats />
-      </aside>
+      </div>
 
-      {/* ── Right column: tabs + panels + input ── */}
-      <main className="right-col">
-        <header className="top-bar">
+      {/* ── Top HUD: wordmark + status + tabs ── */}
+      <header className="hud-top">
+        <div className="hud-brand">
+          <span className="wm-c">C</span>ORTANA
           <StatusBar status={status} />
-          <nav className="tab-bar">
-            {TABS.map(t => (
-              <button
-                key={t.id}
-                className={`tab-btn ${activeTab === t.id ? 'active' : ''}`}
-                onClick={() => setActiveTab(t.id)}
-              >
-                <span className="tab-icon">{t.icon}</span>
-                {t.label}
-              </button>
-            ))}
-          </nav>
-        </header>
+        </div>
+        <nav className="tab-bar">
+          {TABS.map(t => (
+            <button
+              key={t.id}
+              className={`tab-btn ${activeTab === t.id ? 'active' : ''}`}
+              onClick={() => setActiveTab(t.id)}
+            >
+              <span className="tab-icon">{t.icon}</span>
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </header>
 
+      {/* ── System stats HUD (bottom-left corner) ── */}
+      <div className="stats-hud">
+        <SysStats />
+      </div>
+
+      {/* ── Dock: active panel floats over the brain ── */}
+      <main className="dock">
         <div className="panel-area">
           {activeTab === 'chat'     && <ChatPanel messages={messages} />}
           {activeTab === 'terminal' && <TerminalPanel />}
