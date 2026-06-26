@@ -11,7 +11,7 @@ inference:
   flash_attention: true
 
 voice:
-  wake_word: "hey_jarvis_v0.1"   # closest available model; custom "hey cortana" needs training
+  wake_word: "hey cortana"   # detected via VAD + tiny Whisper — no custom model needed
   stt_model: medium.en        # or large-v3
   tts_engine: kokoro          # or macos
   tts_voice: af_sky          # Kokoro American-female — closest to Halo/movie Cortana
