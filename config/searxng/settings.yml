@@ -1,0 +1,34 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "Cortana Search"
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "cortana-local-secret-change-me"
+  bind_address: "0.0.0.0:8080"
+  base_url: "http://localhost:8888/"
+  image_proxy: false
+
+ui:
+  static_use_hash: true
+  default_theme: simple
+  theme_args:
+    simple_style: dark
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: d
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: w

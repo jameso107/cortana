@@ -22,6 +22,9 @@ dependencies = [
     "watchdog>=4",           # plugin hot-reload
     "feedparser>=6",         # RSS news plugin
     "faster-whisper>=1.0",   # STT (whisper.cpp Python bindings)
+    "websockets>=12",        # WebSocket servers (chat + terminal)
+    "ptyprocess>=0.7",       # PTY for browser terminal
+    "kokoro-onnx>=0.4",      # Kokoro TTS
 ]
 
 [project.optional-dependencies]

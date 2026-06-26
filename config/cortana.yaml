@@ -14,7 +14,7 @@ voice:
   wake_word: "hey cortana"
   stt_model: medium.en        # or large-v3
   tts_engine: kokoro          # or macos
-  tts_voice: neutral_male
+  tts_voice: af_sky          # Kokoro American-female — closest to Halo/movie Cortana
   vad_threshold: 0.5
   silence_ms: 800             # ms of silence to end utterance
   push_to_talk_hotkey: "cmd+space"

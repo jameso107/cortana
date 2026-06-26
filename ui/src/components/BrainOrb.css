@@ -3,50 +3,47 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 500px;
-  height: 500px;
+  width: 280px;
+  height: 280px;
+  flex-shrink: 0;
+  margin: 10px 0;
 }
 
 .brain-canvas {
   position: absolute;
-  width: 500px;
-  height: 500px;
+  width: 280px;
+  height: 280px;
+  border-radius: 50%;
 }
 
 .ring {
   position: absolute;
   border-radius: 50%;
-  border: 1px solid #00d4ff33;
-  animation: orbit 8s linear infinite;
+  border: 1px solid;
+  animation: orbit 10s linear infinite;
 }
-.ring-outer {
-  width: 460px; height: 460px;
-  border-color: #00d4ff22;
-  animation-duration: 12s;
+.r1 {
+  width: 260px; height: 260px;
+  border-color: #00d4ff20;
+  animation-duration: 14s;
   animation-direction: reverse;
+  transform-style: preserve-3d;
 }
-.ring-mid {
-  width: 380px; height: 380px;
-  border-color: #0050ff33;
-  animation-duration: 8s;
+.r2 {
+  width: 220px; height: 220px;
+  border-color: #0050ff28;
+  animation-duration: 9s;
 }
 
 @keyframes orbit {
-  from { transform: rotate(0deg) scaleX(1) scaleY(0.3); }
-  to   { transform: rotate(360deg) scaleX(1) scaleY(0.3); }
+  from { transform: rotateX(72deg) rotateZ(0deg); }
+  to   { transform: rotateX(72deg) rotateZ(360deg); }
 }
 
-.orb-label {
-  position: absolute;
-  bottom: 60px;
-  font-size: 10px;
-  letter-spacing: 4px;
-  color: #00d4ff88;
-  font-family: 'Courier New', monospace;
-  text-transform: uppercase;
-}
-
-/* Status-driven accent color shifts */
-.brain-orb.listening .ring { border-color: #00ff9944; }
-.brain-orb.thinking .ring  { border-color: #ff880044; animation-duration: 3s; }
-.brain-orb.speaking .ring  { border-color: #00d4ff66; }
+/* Status color shifts */
+.brain-orb.listening .r1 { border-color: #00ff8828; }
+.brain-orb.listening .r2 { border-color: #00ff8838; }
+.brain-orb.thinking .r1  { border-color: #ff880028; animation-duration: 4s; }
+.brain-orb.thinking .r2  { border-color: #ff880038; animation-duration: 2.5s; }
+.brain-orb.speaking .r1  { border-color: #00d4ff44; }
+.brain-orb.speaking .r2  { border-color: #00d4ff55; }

@@ -1,14 +1,9 @@
 import { useEffect, useRef } from 'react'
 import type { Message } from '../App'
 
-interface Props { messages: Message[] }
-
-export default function ChatPanel({ messages }: Props) {
+export default function ChatPanel({ messages }: { messages: Message[] }) {
   const bottomRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   return (
     <div className="chat-panel">
