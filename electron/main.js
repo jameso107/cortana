@@ -213,19 +213,12 @@ async function startServices() {
     return
   }
   setSplashStatus('Starting Cortana daemon…')
-  const venvBase   = IS_PACKAGED
-    ? path.join(process.env.HOME, 'cortana', '.venv')
-    : path.join(REPO_ROOT, '.venv')
-  const cortanaBin = path.join(venvBase, 'bin', 'cortana')
-  const pythonBin  = path.join(venvBase, 'bin', 'python')
-  const cmd        = fs.existsSync(cortanaBin) ? cortanaBin : pythonBin
-  const args       = fs.existsSync(cortanaBin) ? ['start', '--voice'] : ['-c', `
-import sys; sys.path.insert(0, '${IS_PACKAGED ? ROOT : REPO_ROOT}')
-from cortana.cli import app; app(['start','--voice'])
-`]
-  const cortanaCwd = IS_PACKAGED ? ROOT : REPO_ROOT
-  spawnProc(cmd, args, {
-    cwd: cortanaCwd,
+  // Use the supervisor script so Cortana can restart herself via SIGUSR1
+  const supervisorScript = IS_PACKAGED
+    ? path.join(ROOT, 'scripts', 'supervisor.sh')
+    : path.join(REPO_ROOT, 'scripts', 'supervisor.sh')
+  spawnProc('bash', [supervisorScript, '--voice'], {
+    cwd: IS_PACKAGED ? ROOT : REPO_ROOT,
     detached: false,
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
   })
