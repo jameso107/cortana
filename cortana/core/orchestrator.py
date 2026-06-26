@@ -109,17 +109,32 @@ class Orchestrator:
             full_text = ""
             tool_calls = None
             streamed_any = False
+            # Streaming state for hiding Qwen3 <think>…</think> reasoning.
+            buf = ""
+            emitted = ""
+            in_think_prev = False
 
             async for ev in self.inference.chat_stream(messages, tools):
                 if ev["type"] == "delta":
-                    if emit:
+                    if not emit:
+                        continue
+                    buf += ev["text"]
+                    visible, in_think = self._strip_think(buf)
+                    visible = self._emittable(visible)
+                    if in_think != in_think_prev:
+                        await emit({"type": "reasoning", "value": "start" if in_think else "end"})
+                        in_think_prev = in_think
+                    if len(visible) > len(emitted):
                         if not streamed_any:
                             await emit({"type": "stream_start"})
                             streamed_any = True
-                        await emit({"type": "stream_delta", "text": ev["text"]})
+                        await emit({"type": "stream_delta", "text": visible[len(emitted):]})
+                        emitted = visible
                 else:  # done
                     full_text = ev["text"]
                     tool_calls = ev["tool_calls"]
+            if emit and in_think_prev:
+                await emit({"type": "reasoning", "value": "end"})
 
             if tool_calls:
                 # This step is an action, not the final answer. Any preamble we
@@ -142,13 +157,13 @@ class Orchestrator:
                     for tc in tool_calls
                 ]
                 messages += [
-                    {"role": "assistant", "content": full_text or "", "tool_calls": formatted_calls},
+                    {"role": "assistant", "content": self._strip_think(full_text)[0].strip(), "tool_calls": formatted_calls},
                     *tool_results,
                 ]
                 continue
 
-            # No tool calls → this is the final answer.
-            final_text = full_text
+            # No tool calls → this is the final answer (with reasoning stripped).
+            final_text = self._strip_think(full_text)[0].strip()
             if emit:
                 if not streamed_any:
                     await emit({"type": "stream_start"})
@@ -166,6 +181,30 @@ class Orchestrator:
 
         await self.memory.save(request.text, final_text)
         return Response(text=final_text, tool_calls=all_tool_calls)
+
+    @staticmethod
+    def _strip_think(text: str) -> tuple[str, bool]:
+        """
+        Remove Qwen3 <think>…</think> reasoning. Returns (visible, in_think)
+        where in_think is True if an unclosed <think> is currently open.
+        """
+        import re
+        visible = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+        in_think = False
+        idx = visible.rfind("<think>")
+        if idx != -1:
+            visible = visible[:idx]
+            in_think = True
+        return visible.lstrip("\n"), in_think
+
+    @staticmethod
+    def _emittable(visible: str) -> str:
+        """Hold back a trailing partial '<think>' tag so it never flashes in the UI."""
+        frag = "<think>"
+        for n in range(len(frag) - 1, 0, -1):
+            if visible.endswith(frag[:n]):
+                return visible[:-n]
+        return visible
 
     def _build_messages(self, request: Request, context: str, facts: str) -> list[dict]:
         import os

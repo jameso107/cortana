@@ -6,6 +6,7 @@ interface Props {
   messages: Message[]
   streaming?: string | null
   toolActivity?: string | null
+  reasoning?: boolean
 }
 
 function timeOf(ts: number): string {
@@ -39,7 +40,7 @@ function Bubble({ m }: { m: Message }) {
   )
 }
 
-export default function ChatPanel({ messages, streaming, toolActivity }: Props) {
+export default function ChatPanel({ messages, streaming, toolActivity, reasoning }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -63,6 +64,10 @@ export default function ChatPanel({ messages, streaming, toolActivity }: Props) 
   return (
     <div className="chat-panel" ref={panelRef} onClick={onClick}>
       {messages.map((m, i) => <Bubble key={i} m={m} />)}
+
+      {reasoning && (
+        <div className="tool-activity reasoning-pill">💭 Reasoning<span className="dots">…</span></div>
+      )}
 
       {toolActivity && (
         <div className="tool-activity">⚙ Using <b>{toolActivity}</b>…</div>

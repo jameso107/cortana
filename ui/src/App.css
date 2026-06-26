@@ -254,6 +254,8 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--text); ove
   animation: fadeUp 0.25s ease;
 }
 .tool-activity b { color: var(--cyan); font-weight: 600; }
+.reasoning-pill { color: var(--warn); }
+.reasoning-pill .dots { animation: blink 1.2s ease-in-out infinite; }
 
 /* ─── Markdown rendering ─────────────────────────────── */
 .md { display: flex; flex-direction: column; gap: 8px; }

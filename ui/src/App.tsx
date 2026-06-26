@@ -48,6 +48,7 @@ export default function App() {
   const [voiceOn, setVoiceOn]     = useState(false)
   const [streaming, setStreaming] = useState<string | null>(null)
   const [toolActivity, setToolActivity] = useState<string | null>(null)
+  const [reasoning, setReasoning] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
@@ -63,13 +64,14 @@ export default function App() {
           }
           if (data.type === 'stream_start') { setStreaming(''); setToolActivity(null) }
           if (data.type === 'stream_delta')  setStreaming(prev => (prev ?? '') + data.text)
-          if (data.type === 'stream_cancel') setStreaming(null)
+          if (data.type === 'stream_cancel') { setStreaming(null); setReasoning(false) }
           if (data.type === 'stream_end') {
             const text = data.text ?? ''
             if (text) setMessages(prev => [...prev, { role: 'cortana', text, ts: Date.now() }])
-            setStreaming(null); setToolActivity(null)
+            setStreaming(null); setToolActivity(null); setReasoning(false)
           }
           if (data.type === 'tool') setToolActivity(data.name)
+          if (data.type === 'reasoning') setReasoning(data.value === 'start')
           if (data.type === 'voice_input') {
             setMessages(prev => [...prev, { role: 'user', text: `🎤 ${data.text}`, ts: Date.now() }])
           }
@@ -149,7 +151,7 @@ export default function App() {
       {/* ── Dock ── */}
       <main className="dock">
         <div className="panel-area">
-          {activeTab === 'chat'     && <ChatPanel messages={messages} streaming={streaming} toolActivity={toolActivity} />}
+          {activeTab === 'chat'     && <ChatPanel messages={messages} streaming={streaming} toolActivity={toolActivity} reasoning={reasoning} />}
           {activeTab === 'terminal' && <TerminalPanel />}
           {activeTab === 'search'   && <SearchPanel />}
           {activeTab === 'notes'    && <NotesPanel />}
