@@ -19,7 +19,7 @@ llama-server \
   --ctx-size 16384 \
   --n-gpu-layers 99 \
   --threads 8 \
-  --flash-attn \
+  --flash-attn on \
   --host 127.0.0.1 \
   > ~/.cortana/logs/llama-server.log 2>&1 &
 LLAMA_PID=$!

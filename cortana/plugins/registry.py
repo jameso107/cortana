@@ -60,6 +60,7 @@ class PluginRegistry:
             caps = ", ".join(sorted(p.capabilities)) or "none"
             log.info("plugin %-16s caps=[%s]", p.name, caps)
         log.info("Loaded %d plugins.", len(self._plugins))
+        _set_registry(self)
 
     def _gated(self, name: str) -> bool:
         """Return True if a plugin name is disabled by config."""
@@ -166,3 +167,16 @@ class PluginRegistry:
                 "content": content,
             })
         return results
+
+
+# Shared accessor so HTTP endpoints can list plugins.
+_active_registry: "PluginRegistry | None" = None
+
+
+def _set_registry(reg: "PluginRegistry"):
+    global _active_registry
+    _active_registry = reg
+
+
+def get_registry() -> "PluginRegistry | None":
+    return _active_registry

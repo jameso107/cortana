@@ -12,6 +12,19 @@ log = logging.getLogger(__name__)
 EmitFn = Callable[[dict], Awaitable[None]]
 
 
+# Shared accessor so HTTP endpoints can reach the live orchestrator.
+_active: "Orchestrator | None" = None
+
+
+def _set_orchestrator(o: "Orchestrator"):
+    global _active
+    _active = o
+
+
+def get_orchestrator() -> "Orchestrator | None":
+    return _active
+
+
 @dataclass
 class Request:
     text: str
@@ -53,7 +66,19 @@ class Orchestrator:
         await self.memory.init()
         await self.plugins.load_all()
         self._running = True
+        _set_orchestrator(self)
         log.info("Cortana ready.")
+
+    @property
+    def reasoning(self) -> str:
+        return self._reasoning
+
+    def set_reasoning(self, mode: str) -> bool:
+        if mode in ("auto", "always", "never"):
+            self._reasoning = mode
+            log.info("Reasoning mode set to %s.", mode)
+            return True
+        return False
 
     async def stop(self):
         self._running = False

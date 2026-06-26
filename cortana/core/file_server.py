@@ -94,6 +94,18 @@ def _model_display(model_filename: str) -> str:
 
 _boot_time = psutil.boot_time()
 
+
+async def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
+    import asyncio
+    try:
+        fut = asyncio.open_connection(host, port)
+        reader, writer = await asyncio.wait_for(fut, timeout=timeout)
+        writer.close()
+        return True
+    except Exception:
+        return False
+
+
 async def handle_stats(request: web.Request) -> web.Response:
     from cortana.config import get_config
     cfg = get_config()
@@ -110,6 +122,7 @@ async def handle_stats(request: web.Request) -> web.Response:
     uptime = f"{h}h {m}m"
 
     model_label = _model_display(cfg.inference.model)
+    llama_up = await _port_open(cfg.inference.host, cfg.inference.port)
 
     data = {
         "cpu":         round(cpu, 1),
@@ -118,8 +131,36 @@ async def handle_stats(request: web.Request) -> web.Response:
         "ram_total_gb": round(ram_total_gb, 1),
         "model":       model_label,
         "uptime":      uptime,
+        "llama_up":    llama_up,
     }
     return web.json_response(data, headers={"Access-Control-Allow-Origin": "*"})
+
+
+async def handle_plugins(request: web.Request) -> web.Response:
+    """List loaded plugins and their declared capabilities."""
+    from cortana.plugins.registry import get_registry
+    reg = get_registry()
+    plugins = reg.manifests() if reg is not None else []
+    return web.json_response({"plugins": plugins},
+                             headers={"Access-Control-Allow-Origin": "*"})
+
+
+async def handle_config(request: web.Request) -> web.Response:
+    """GET current runtime config; POST {reasoning: ...} to change it live."""
+    from cortana.core.orchestrator import get_orchestrator
+    orch = get_orchestrator()
+    if request.method == "POST":
+        body = await request.json()
+        if orch is not None and "reasoning" in body:
+            ok = orch.set_reasoning(str(body["reasoning"]))
+            return web.json_response({"ok": ok, "reasoning": orch.reasoning},
+                                     headers={"Access-Control-Allow-Origin": "*"})
+        return web.json_response({"ok": False}, status=400,
+                                 headers={"Access-Control-Allow-Origin": "*"})
+    return web.json_response(
+        {"reasoning": orch.reasoning if orch else "auto"},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 async def handle_memory(request: web.Request) -> web.Response:
@@ -154,6 +195,9 @@ async def serve(host: str = "localhost", port: int = 8767):
     app.router.add_get("/stats", handle_stats)
     app.router.add_get("/memory", handle_memory)
     app.router.add_delete("/memory/fact", handle_forget)
+    app.router.add_get("/plugins", handle_plugins)
+    app.router.add_get("/config", handle_config)
+    app.router.add_post("/config", handle_config)
 
     # Serve the built React UI.
     # Priority: ~/cortana/ui/dist (live, editable by self_editor) → bundled copy in .app Resources

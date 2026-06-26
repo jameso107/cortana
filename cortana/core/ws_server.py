@@ -35,9 +35,24 @@ async def broadcast(msg: dict):
     )
 
 
+async def _run_turn(orchestrator, text: str):
+    """Run one chat turn, streaming events to clients. Cancellable via 'stop'."""
+    from cortana.core.orchestrator import Request
+
+    async def emit(ev: dict):
+        await broadcast(ev)
+
+    await broadcast({"type": "status", "value": "thinking"})
+    # The final answer arrives incrementally via stream_* events, so we do NOT
+    # also send a "message" here (that would duplicate it).
+    await orchestrator.handle(Request(text=text, source="text"), emit=emit)
+    await broadcast({"type": "status", "value": "idle"})
+
+
 async def handle(ws: WebSocketServerProtocol, orchestrator):
     _clients.add(ws)
     log.info("UI client connected (%d total).", len(_clients))
+    current: asyncio.Task | None = None
     try:
         async for raw in ws:
             data = json.loads(raw)
@@ -52,6 +67,20 @@ async def handle(ws: WebSocketServerProtocol, orchestrator):
                 await broadcast({"type": "voice_mode_ack", "enabled": enabled})
                 continue
 
+            if msg_type == "stop":
+                if current and not current.done():
+                    current.cancel()
+                    # Wait for the turn to unwind, then notify from THIS
+                    # (uncancelled) context so the messages actually send.
+                    try:
+                        await current
+                    except asyncio.CancelledError:
+                        pass
+                    await broadcast({"type": "stream_cancel"})
+                    await broadcast({"type": "message", "text": "⏹ _Generation stopped._"})
+                    await broadcast({"type": "status", "value": "idle"})
+                continue
+
             if msg_type != "message":
                 continue
 
@@ -59,23 +88,18 @@ async def handle(ws: WebSocketServerProtocol, orchestrator):
             if not text:
                 continue
 
-            await broadcast({"type": "status", "value": "thinking"})
+            # One turn at a time — ignore new prompts while busy.
+            if current and not current.done():
+                await broadcast({"type": "message", "text": "_Still working on the previous request — hit Stop to interrupt._"})
+                continue
 
-            from cortana.core.orchestrator import Request
-
-            # Stream the turn to all UI clients. The final answer arrives
-            # incrementally via stream_* events, so we do NOT also send a
-            # "message" here (that would duplicate it).
-            async def emit(ev: dict):
-                await broadcast(ev)
-
-            await orchestrator.handle(Request(text=text, source="text"), emit=emit)
-
-            await broadcast({"type": "status", "value": "idle"})
+            current = asyncio.create_task(_run_turn(orchestrator, text))
 
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
+        if current and not current.done():
+            current.cancel()
         _clients.discard(ws)
         log.info("UI client disconnected (%d remaining).", len(_clients))
 
