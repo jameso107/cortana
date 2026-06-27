@@ -19,7 +19,19 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": [{ "target": "dmg", "arch": ["arm64"] }],
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Cortana listens to your voice when you enable voice mode, processed locally on this Mac.",
+        "NSAppleEventsUsageDescription": "Cortana uses automation to read and manage your Mail, Calendar, and Reminders on your behalf.",
+        "NSCalendarsUsageDescription": "Cortana reads and creates calendar events when you ask.",
+        "NSRemindersUsageDescription": "Cortana creates and completes reminders when you ask.",
+        "NSSystemAdministrationUsageDescription": "Cortana adjusts system settings such as volume and brightness when you ask.",
+        "LSUIElement": false
+      }
     },
     "dmg": {
       "title": "Cortana"

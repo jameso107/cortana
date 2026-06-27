@@ -28,7 +28,11 @@ export default function SystemPanel() {
     } catch { /* daemon not up */ }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    const id = setInterval(load, 4000)   // self-correct if llama/daemon come up later
+    return () => clearInterval(id)
+  }, [load])
 
   const setMode = async (mode: string) => {
     setReasoning(mode)
