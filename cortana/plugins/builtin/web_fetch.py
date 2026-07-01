@@ -8,7 +8,11 @@ from cortana.plugins.base import PluginBase
 class Plugin(PluginBase):
     name = "web_fetch"
     capabilities = {"network"}
-    description = "Fetch a URL and return its text content."
+    description = (
+        "Fetch and read the contents of a SPECIFIC URL the user provided or that a "
+        "search returned. Use to extract or summarize a known page — not to answer "
+        "general questions."
+    )
 
     def register(self) -> dict:
         return {

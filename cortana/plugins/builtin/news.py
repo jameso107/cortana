@@ -12,7 +12,7 @@ DEFAULT_FEEDS = [
 class Plugin(PluginBase):
     name = "get_news"
     capabilities = {"network"}
-    description = "Fetch latest headlines from RSS feeds."
+    description = "Fetch the latest real-time news headlines from RSS feeds. Use only when the user asks for current news."
 
     def register(self) -> dict:
         return {

@@ -1,6 +1,7 @@
 """Central orchestrator — routes requests, runs the agent loop, assembles responses."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
@@ -68,6 +69,28 @@ class Orchestrator:
         self._running = True
         _set_orchestrator(self)
         log.info("Cortana ready.")
+        # Prime the model + KV cache so the FIRST real turn isn't a ~3s cold start.
+        await self._warmup()
+
+    async def _warmup(self):
+        """
+        Prime the slow-to-initialize paths so the FIRST real turn is hot:
+          1. the memory embedder (Chroma's local model loads lazily on first query — ~3s)
+          2. the llama.cpp KV cache with the real system-prompt+tools prefix
+        Output is discarded.
+        """
+        try:
+            await self.memory.retrieve("warmup")          # loads the embedding model
+        except Exception as exc:
+            log.debug("Memory warmup skipped (%s).", exc)
+        try:
+            msgs = self._build_messages(Request(text="hi", source="warmup"), "", "")
+            tools = self.plugins.get_tool_schemas()
+            async for _ in self.inference.chat_stream(msgs, tools):
+                pass
+            log.info("Warmed (memory embedder + model) — first turn will be hot.")
+        except Exception as exc:
+            log.debug("Inference warmup skipped (%s).", exc)
 
     @property
     def reasoning(self) -> str:
@@ -97,9 +120,12 @@ class Orchestrator:
         """
         log.debug("Handling request: %s", request.text)
 
-        context = await self.memory.retrieve(request.text)
+        # Kick off the (async) memory retrieval and do the sync setup concurrently,
+        # so the embedding lookup never sits alone on the critical path.
+        retrieve_task = asyncio.create_task(self.memory.retrieve(request.text))
         facts = self.memory.facts_block() if self._inject_facts else ""
         tools = self.plugins.get_tool_schemas()
+        context = await retrieve_task
         messages = self._build_messages(request, context, facts)
 
         final_text = ""
@@ -216,9 +242,23 @@ class Orchestrator:
             "running on the user's Mac. You are capable, direct, and efficient.\n\n"
 
             "## Tools & autonomy\n"
-            "You can call tools and chain them across multiple steps to complete a "
-            "task: act, observe the result, then decide the next action until done. "
-            "Use tools when they help; answer directly when they don't.\n\n"
+            "You can call tools and chain them across multiple steps: act, observe "
+            "the result, then decide the next action until the task is done.\n"
+            "Choosing when to use a tool — follow these rules:\n"
+            "- ANSWER DIRECTLY from your own knowledge for general facts, definitions, "
+            "explanations, comparisons, reasoning, coding, and anything not tied to a "
+            "specific live/recent/personal data source. Do NOT search the web for "
+            "these — e.g. 'REST vs GraphQL', 'how does TLS work', 'write a function'.\n"
+            "- Use NETWORK tools (`web_search`, `web_fetch`, `get_weather`, `get_news`) "
+            "ONLY for information that is current, real-time, or post-training: today's "
+            "news, live prices, weather, or a specific URL's contents.\n"
+            "- Use SYSTEM tools (`calendar`, `email`, `reminders`, `system_control`, "
+            "`file_manager`, `notes`, `clipboard`) when the user asks you to read or act "
+            "on their machine or personal data.\n"
+            "- Use `memory` for durable personal facts, `code_assistant` for focused "
+            "coding work, and `self_editor` only to change your own source.\n"
+            "When unsure whether a fact needs fresh data, prefer answering directly and "
+            "offer to search if they want the latest.\n\n"
 
             "## Memory\n"
             "Use the `memory` tool to remember durable facts the user shares (name, "
@@ -244,11 +284,9 @@ class Orchestrator:
             "aloud via local text-to-speech (Kokoro). You are NOT a text-only chatbot — "
             "never claim you have no voice or no way to speak.\n\n"
 
-            "## Other capabilities\n"
-            "You can control the system (volume, brightness, apps), search the web, "
-            "manage files, run shell commands, take notes, read/send email, set "
-            "reminders, and more via your tools.\n"
-            "Keep responses concise. Confirm before destructive or irreversible actions.\n\n"
+            "## Style\n"
+            "Keep responses concise and direct. Confirm before destructive or "
+            "irreversible actions.\n\n"
         )
         if facts:
             system += f"## What you know about the user\n{facts}\n\n"

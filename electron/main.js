@@ -181,6 +181,7 @@ async function startServices() {
       '--ctx-size', '16384',
       '--n-gpu-layers', '99',
       '--threads', '8',
+      '--parallel', '1',
       '--host', '127.0.0.1',
     ])
     // Wait up to 60s for llama-server (model load takes a while)
