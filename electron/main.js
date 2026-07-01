@@ -1,6 +1,7 @@
 'use strict'
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell } = require('electron')
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell,
+        globalShortcut, ipcMain, screen } = require('electron')
 const { spawn, execSync }  = require('child_process')
 const path  = require('path')
 const fs    = require('fs')
@@ -37,6 +38,7 @@ const PORT_API  = 8767
 let mainWindow  = null
 let splashWin   = null
 let tray        = null
+let overlayWin  = null
 let procs       = []   // child processes to kill on quit
 
 // ── Splash window ──────────────────────────────────────────────────────────
@@ -60,8 +62,11 @@ function setSplashStatus(msg) {
   ).catch(() => {})
 }
 
-// ── Main window ────────────────────────────────────────────────────────────
-function createMainWindow() {
+// ── Console window (the full tabbed UI — opened on demand) ───────────────────
+function openConsole() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show(); mainWindow.focus(); return
+  }
   mainWindow = new BrowserWindow({
     width: 1400, height: 900,
     minWidth: 900, minHeight: 600,
@@ -74,22 +79,48 @@ function createMainWindow() {
       nodeIntegration: false,
     },
   })
-
   mainWindow.loadURL(`http://127.0.0.1:${PORT_API}`)
-
-  mainWindow.once('ready-to-show', () => {
-    if (splashWin && !splashWin.isDestroyed()) splashWin.close()
-    mainWindow.show()
-    mainWindow.focus()
-  })
-
+  mainWindow.once('ready-to-show', () => { mainWindow.show(); mainWindow.focus() })
   mainWindow.on('closed', () => { mainWindow = null })
   mainWindow.on('close', (e) => {
-    if (process.platform === 'darwin') {
-      e.preventDefault()
-      mainWindow.hide()
-    }
+    if (process.platform === 'darwin' && !app.isQuiting) { e.preventDefault(); mainWindow.hide() }
   })
+}
+
+// ── Summon overlay (the ambient, primary surface) ────────────────────────────
+function createOverlay() {
+  overlayWin = new BrowserWindow({
+    width: 720, height: 540,
+    frame: false, transparent: true, resizable: false, movable: true,
+    alwaysOnTop: true, skipTaskbar: true, show: false,
+    fullscreenable: false, hasShadow: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+  overlayWin.loadURL(`http://127.0.0.1:${PORT_API}/#overlay`)
+  overlayWin.setAlwaysOnTop(true, 'floating')
+  overlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // Ambient: dismiss when the user clicks away.
+  overlayWin.on('blur', () => { if (!app.isQuiting) overlayWin?.hide() })
+  overlayWin.on('closed', () => { overlayWin = null })
+}
+
+function showOverlay() {
+  if (!overlayWin || overlayWin.isDestroyed()) createOverlay()
+  const { width } = screen.getPrimaryDisplay().workAreaSize
+  const b = overlayWin.getBounds()
+  overlayWin.setPosition(Math.round((width - b.width) / 2), 140)
+  overlayWin.show()
+  overlayWin.focus()
+}
+
+function toggleOverlay() {
+  if (overlayWin && overlayWin.isVisible()) overlayWin.hide()
+  else showOverlay()
 }
 
 // ── Tray ───────────────────────────────────────────────────────────────────
@@ -100,12 +131,8 @@ function createTray() {
     : nativeImage.createEmpty()
 
   tray = new Tray(icon)
-  tray.setToolTip('Cortana')
-  tray.on('click', () => {
-    if (mainWindow) {
-      mainWindow.isVisible() ? mainWindow.focus() : mainWindow.show()
-    }
-  })
+  tray.setToolTip('Cortana — ⌘⇧Space to summon')
+  tray.on('click', () => toggleOverlay())
   updateTrayMenu('starting')
 }
 
@@ -115,7 +142,8 @@ function updateTrayMenu(state) {
     { label: 'Cortana', enabled: false },
     { label, enabled: false },
     { type: 'separator' },
-    { label: 'Show window', click: () => mainWindow?.show() },
+    { label: 'Summon Cortana', accelerator: 'CmdOrCtrl+Shift+Space', click: () => showOverlay() },
+    { label: 'Open Console', click: () => openConsole() },
     { label: 'Restart services', click: restartServices },
     { type: 'separator' },
     { label: 'Quit Cortana', click: () => { app.isQuiting = true; app.quit() } },
@@ -236,10 +264,27 @@ async function restartServices() {
   await new Promise(r => setTimeout(r, 1500))
   await startServices()
   mainWindow?.reload()
+  overlayWin?.reload()
+}
+
+// Overlay control from the renderer (Esc to dismiss, "Open console" link).
+ipcMain.on('overlay:hide', () => overlayWin?.hide())
+ipcMain.on('console:open', () => { overlayWin?.hide(); openConsole() })
+
+function registerHotkey() {
+  // Global summon shortcut — try the primary, fall back if it's taken.
+  for (const accel of ['CommandOrControl+Shift+Space', 'Alt+Space']) {
+    if (globalShortcut.register(accel, toggleOverlay)) {
+      console.log('Summon hotkey:', accel)
+      return
+    }
+  }
+  console.warn('Could not register a global summon hotkey.')
 }
 
 // ── App lifecycle ──────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  if (app.dock) app.dock.hide()   // menubar agent — live in the tray, not the dock
   createSplash()
   createTray()
   updateTrayMenu('starting')
@@ -247,7 +292,10 @@ app.whenReady().then(async () => {
   try {
     await startServices()
     updateTrayMenu('ready')
-    createMainWindow()
+    createOverlay()
+    registerHotkey()
+    if (splashWin && !splashWin.isDestroyed()) splashWin.close()
+    showOverlay()   // greet the user once so they see Cortana is live
   } catch (err) {
     updateTrayMenu('error')
     dialog.showErrorBox('Cortana startup failed', String(err))
@@ -255,14 +303,13 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  // On macOS keep running in tray
+  // Menubar agent — keep running even with no windows.
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('activate', () => {
-  if (mainWindow) mainWindow.show()
-  else if (!splashWin) createMainWindow()
-})
+app.on('activate', () => showOverlay())
+
+app.on('will-quit', () => globalShortcut.unregisterAll())
 
 app.on('before-quit', () => {
   app.isQuiting = true

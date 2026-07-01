@@ -37,6 +37,11 @@ const QUICK = [
   { label: 'System status', text: 'Summarize your current system status.' },
 ]
 
+// The summon overlay loads the same page at #overlay; render a compact surface.
+const OVERLAY = typeof window !== 'undefined' && window.location.hash.includes('overlay')
+if (OVERLAY) document.documentElement.classList.add('overlay')
+const bridge = (typeof window !== 'undefined' && (window as any).cortana) || {}
+
 export default function App() {
   const [status, setStatus]       = useState<Status>('idle')
   const [connected, setConnected] = useState(false)
@@ -131,7 +136,51 @@ export default function App() {
   const resetChat = () => wsRef.current?.readyState === WebSocket.OPEN &&
     wsRef.current.send(JSON.stringify({ type: 'reset' }))
 
+  // Overlay: Esc dismisses the summon panel.
+  useEffect(() => {
+    if (!OVERLAY) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') bridge.hideOverlay?.() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const isChat = activeTab === 'chat'
+
+  // ── Summon overlay: a compact, focused command surface ──
+  if (OVERLAY) {
+    return (
+      <div className="overlay-root">
+        <div className="overlay-card">
+          <header className="ov-bar">
+            <span className="ov-brand"><span className="wm-c">C</span>ORTANA</span>
+            <span className={`conn-pill ${connected ? 'on' : 'off'}`}>{connected ? 'ONLINE' : 'OFFLINE'}</span>
+            <StatusBar status={status} />
+            <div className="ov-actions">
+              <button onClick={() => bridge.openConsole?.()} title="Open full console">⤢</button>
+              <button onClick={() => bridge.hideOverlay?.()} title="Dismiss (Esc)">✕</button>
+            </div>
+          </header>
+          <ChatPanel messages={messages} streaming={streaming} toolActivity={toolActivity} reasoning={reasoning} />
+          <div className="input-row">
+            <div className="input-icon">◈</div>
+            <input
+              className="text-input"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && send()}
+              placeholder="Ask Cortana…"
+              autoFocus
+            />
+            <button className={`mic-btn ${voiceOn ? 'active' : ''}`} onClick={toggleVoice}
+              title={voiceOn ? 'Voice on' : 'Enable voice'}>{voiceOn ? '🎙' : '🎤'}</button>
+            {generating
+              ? <button className="stop-btn" onClick={stop}>■</button>
+              : <button className="send-btn" onClick={send}>Send</button>}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={`app ${isChat ? 'mode-chat' : 'mode-panel'}`}>

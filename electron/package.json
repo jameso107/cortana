@@ -30,7 +30,7 @@
         "NSCalendarsUsageDescription": "Cortana reads and creates calendar events when you ask.",
         "NSRemindersUsageDescription": "Cortana creates and completes reminders when you ask.",
         "NSSystemAdministrationUsageDescription": "Cortana adjusts system settings such as volume and brightness when you ask.",
-        "LSUIElement": false
+        "LSUIElement": true
       }
     },
     "dmg": {
