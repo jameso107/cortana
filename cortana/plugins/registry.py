@@ -1,11 +1,13 @@
 """Plugin registry — loads, hot-reloads, and dispatches to plugins."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import importlib.util
 import json
 import logging
+import time
 from pathlib import Path
 
 from cortana.plugins.base import PluginBase
@@ -13,6 +15,13 @@ from cortana.plugins.base import PluginBase
 log = logging.getLogger(__name__)
 
 APPROVED_FILE = Path.home() / ".cortana" / "approved_plugins.json"
+
+# Circuit-breaker tuning: after this many failures within the window, a plugin
+# is skipped for a cooldown so one bad dependency can't degrade every turn.
+_BREAKER_THRESHOLD = 3
+_BREAKER_WINDOW = 120.0     # seconds over which failures accumulate
+_BREAKER_COOLDOWN = 90.0    # seconds a tripped plugin is skipped
+_DISPATCH_TIMEOUT = 30.0    # hard cap on a single tool call (safety net for hangs)
 
 
 def _sha256(path: Path) -> str:
@@ -42,6 +51,8 @@ class PluginRegistry:
         self._plugins: dict[str, PluginBase] = {}
         self._enabled: set[str] = set()
         self._disabled: set[str] = set()
+        # name -> {"fails": [timestamps], "open_until": monotonic_ts}
+        self._breaker: dict[str, dict] = {}
 
     async def load_all(self):
         from cortana.config import get_config
@@ -154,10 +165,24 @@ class PluginRegistry:
             plugin = self._plugins.get(name)
             if plugin is None:
                 content = f"Unknown tool: {name}"
+            elif self._breaker_open(name):
+                content = (
+                    f"{name} is temporarily unavailable (it failed repeatedly and is "
+                    "in a cooldown). Proceed without it or try again shortly."
+                )
+                log.warning("Plugin %s skipped — circuit breaker open.", name)
             else:
                 try:
-                    content = await plugin.handle(name, args)
+                    content = await asyncio.wait_for(
+                        plugin.handle(name, args), timeout=_DISPATCH_TIMEOUT
+                    )
+                    self._breaker_reset(name)
+                except asyncio.TimeoutError:
+                    self._breaker_record(name)
+                    log.error("Plugin %s timed out after %.0fs.", name, _DISPATCH_TIMEOUT)
+                    content = f"{name} timed out. Proceed without its result."
                 except Exception as exc:
+                    self._breaker_record(name)
                     log.error("Plugin %s error: %s", name, exc)
                     content = f"Error in {name}: {exc}"
 
@@ -167,6 +192,24 @@ class PluginRegistry:
                 "content": content,
             })
         return results
+
+    # ── Circuit breaker ─────────────────────────────────────────────────────────
+    def _breaker_open(self, name: str) -> bool:
+        st = self._breaker.get(name)
+        return bool(st and st.get("open_until", 0) > time.monotonic())
+
+    def _breaker_record(self, name: str):
+        now = time.monotonic()
+        st = self._breaker.setdefault(name, {"fails": [], "open_until": 0})
+        st["fails"] = [t for t in st["fails"] if now - t < _BREAKER_WINDOW] + [now]
+        if len(st["fails"]) >= _BREAKER_THRESHOLD:
+            st["open_until"] = now + _BREAKER_COOLDOWN
+            st["fails"] = []
+            log.warning("Plugin %s circuit breaker tripped — cooling down %.0fs.", name, _BREAKER_COOLDOWN)
+
+    def _breaker_reset(self, name: str):
+        if name in self._breaker:
+            self._breaker[name] = {"fails": [], "open_until": 0}
 
 
 # Shared accessor so HTTP endpoints can list plugins.

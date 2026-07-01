@@ -60,7 +60,16 @@ class Orchestrator:
         self._max_steps = cfg.agent.max_steps
         self._inject_facts = cfg.agent.inject_facts
         self._reasoning = cfg.agent.reasoning  # "auto" | "always" | "never"
+        # Per-session conversation history so Cortana remembers the running
+        # conversation across turns (and across UI reconnects). Keyed by
+        # session_id; a single shared "default" session unifies text + voice.
+        self._sessions: dict[str, list[dict]] = {}
+        self._history_max = 24  # messages kept before oldest are dropped (~12 turns)
         self._running = False
+
+    def reset_session(self, session_id: str = "default"):
+        self._sessions.pop(session_id, None)
+        log.info("Session %s cleared.", session_id)
 
     async def start(self):
         log.info("Cortana orchestrator starting…")
@@ -120,38 +129,52 @@ class Orchestrator:
         """
         log.debug("Handling request: %s", request.text)
 
+        session_id = request.session_id or "default"
+        history = self._sessions.setdefault(session_id, [])
+
         # Kick off the (async) memory retrieval and do the sync setup concurrently,
         # so the embedding lookup never sits alone on the critical path.
         retrieve_task = asyncio.create_task(self.memory.retrieve(request.text))
         facts = self.memory.facts_block() if self._inject_facts else ""
         tools = self.plugins.get_tool_schemas()
+        prefix = self._reasoning_prefix(request.text)
+        think_mode = prefix == "/think"
         context = await retrieve_task
-        messages = self._build_messages(request, context, facts)
+        messages = self._build_messages(request, context, facts, history, prefix)
 
         final_text = ""
         all_tool_calls: list[dict] = []
+        reasoning_open = False
+
+        # Show a "thinking…" indicator whenever we routed this turn into reasoning
+        # mode (driven by our own decision — this Qwen build doesn't emit inline
+        # <think> tags, so we can't rely on detecting them).
+        async def close_reasoning():
+            nonlocal reasoning_open
+            if reasoning_open and emit:
+                await emit({"type": "reasoning", "value": "end"})
+            reasoning_open = False
+
+        if emit and think_mode:
+            await emit({"type": "reasoning", "value": "start"})
+            reasoning_open = True
 
         for step in range(self._max_steps):
             full_text = ""
             tool_calls = None
             streamed_any = False
-            # Streaming state for hiding Qwen3 <think>…</think> reasoning.
-            buf = ""
+            buf = ""       # accumulates raw content; <think> tags stripped for display
             emitted = ""
-            in_think_prev = False
 
             async for ev in self.inference.chat_stream(messages, tools):
                 if ev["type"] == "delta":
                     if not emit:
                         continue
                     buf += ev["text"]
-                    visible, in_think = self._strip_think(buf)
-                    visible = self._emittable(visible)
-                    if in_think != in_think_prev:
-                        await emit({"type": "reasoning", "value": "start" if in_think else "end"})
-                        in_think_prev = in_think
+                    visible = self._emittable(self._strip_think(buf)[0])
                     if len(visible) > len(emitted):
                         if not streamed_any:
+                            await close_reasoning()
                             await emit({"type": "stream_start"})
                             streamed_any = True
                         await emit({"type": "stream_delta", "text": visible[len(emitted):]})
@@ -159,14 +182,14 @@ class Orchestrator:
                 else:  # done
                     full_text = ev["text"]
                     tool_calls = ev["tool_calls"]
-            if emit and in_think_prev:
-                await emit({"type": "reasoning", "value": "end"})
 
             if tool_calls:
                 # This step is an action, not the final answer. Any preamble we
                 # streamed isn't the user-facing reply — tell the UI to drop it.
                 if streamed_any and emit:
                     await emit({"type": "stream_cancel"})
+                    streamed_any = False
+                    emitted = ""
 
                 all_tool_calls.extend(tool_calls)
                 if emit:
@@ -191,6 +214,7 @@ class Orchestrator:
             # No tool calls → this is the final answer (with reasoning stripped).
             final_text = self._strip_think(full_text)[0].strip()
             if emit:
+                await close_reasoning()
                 if not streamed_any:
                     await emit({"type": "stream_start"})
                 await emit({"type": "stream_end", "text": final_text})
@@ -202,9 +226,15 @@ class Orchestrator:
                 "Could you narrow it down?"
             )
             if emit:
+                await close_reasoning()
                 await emit({"type": "stream_start"})
                 await emit({"type": "stream_end", "text": final_text})
 
+        # Persist the turn to the running conversation + episodic memory.
+        history.append({"role": "user", "content": request.text})
+        history.append({"role": "assistant", "content": final_text})
+        if len(history) > self._history_max:
+            del history[: len(history) - self._history_max]
         await self.memory.save(request.text, final_text)
         return Response(text=final_text, tool_calls=all_tool_calls)
 
@@ -232,7 +262,8 @@ class Orchestrator:
                 return visible[:-n]
         return visible
 
-    def _build_messages(self, request: Request, context: str, facts: str) -> list[dict]:
+    def _build_messages(self, request: Request, context: str, facts: str,
+                        history: list[dict] | None = None, prefix: str = "") -> list[dict]:
         import os
         repo_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..")
@@ -291,12 +322,14 @@ class Orchestrator:
         if facts:
             system += f"## What you know about the user\n{facts}\n\n"
         if context:
-            system += f"## Relevant memory\n{context}\n"
+            system += f"## Relevant memory (semantic recall of older conversations)\n{context}\n"
 
-        prefix = self._reasoning_prefix(request.text)
+        if not prefix:
+            prefix = self._reasoning_prefix(request.text)
         user = f"{prefix}\n{request.text}" if prefix else request.text
         return [
             {"role": "system", "content": system},
+            *(history or []),
             {"role": "user", "content": user},
         ]
 

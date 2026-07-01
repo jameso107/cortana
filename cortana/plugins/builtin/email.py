@@ -33,6 +33,7 @@ class Plugin(PluginBase):
                         "action": {
                             "type": "string",
                             "enum": ["list_recent", "read", "send"],
+                            "description": "list_recent=show recent inbox subjects (use `count`); read=full body of message at `index` (call list_recent first to get the index); send=compose to `to`/`subject`/`body` (confirm with the user before sending).",
                         },
                         "count": {
                             "type": "integer",

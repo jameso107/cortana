@@ -67,6 +67,11 @@ async def handle(ws: WebSocketServerProtocol, orchestrator):
                 await broadcast({"type": "voice_mode_ack", "enabled": enabled})
                 continue
 
+            if msg_type == "reset":
+                orchestrator.reset_session("default")
+                await broadcast({"type": "session_reset"})
+                continue
+
             if msg_type == "stop":
                 if current and not current.done():
                     current.cancel()

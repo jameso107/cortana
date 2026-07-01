@@ -19,10 +19,11 @@ class Plugin(PluginBase):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["search", "read", "list", "move", "delete"]},
-                        "path": {"type": "string"},
-                        "query": {"type": "string"},
-                        "destination": {"type": "string"},
+                        "action": {"type": "string", "enum": ["search", "read", "list", "move", "delete"],
+                            "description": "list=directory contents of `path`; read=file contents of `path`; search=find files under `path` matching `query`; move=`path`→`destination`; delete=remove `path` (destructive, confirm first)."},
+                        "path": {"type": "string", "description": "Absolute file or directory path."},
+                        "query": {"type": "string", "description": "Filename/content substring for search."},
+                        "destination": {"type": "string", "description": "Target path for move."},
                     },
                     "required": ["action"],
                 },

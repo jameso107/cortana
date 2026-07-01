@@ -23,8 +23,8 @@ class Plugin(PluginBase):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "url": {"type": "string"},
-                        "max_chars": {"type": "integer", "default": 4000},
+                        "url": {"type": "string", "description": "The full http(s) URL to fetch and read."},
+                        "max_chars": {"type": "integer", "default": 4000, "description": "Max characters of page text to return."},
                     },
                     "required": ["url"],
                 },
