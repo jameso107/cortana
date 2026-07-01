@@ -77,6 +77,8 @@ class Orchestrator:
         await self.plugins.load_all()
         self._running = True
         _set_orchestrator(self)
+        # Spawn any plugin background loops (scheduler, monitors → proactivity).
+        self._bg_tasks = self.plugins.spawn_background_tasks()
         log.info("Cortana ready.")
         # Prime the model + KV cache so the FIRST real turn isn't a ~3s cold start.
         await self._warmup()
@@ -114,6 +116,8 @@ class Orchestrator:
 
     async def stop(self):
         self._running = False
+        for t in getattr(self, "_bg_tasks", []):
+            t.cancel()
         log.info("Cortana stopped.")
 
     async def handle(self, request: Request, emit: EmitFn | None = None) -> Response:
@@ -319,6 +323,13 @@ class Orchestrator:
             "Keep responses concise and direct. Confirm before destructive or "
             "irreversible actions.\n\n"
         )
+        if request.source == "voice":
+            system += (
+                "## Voice reply mode\n"
+                "This turn arrived by VOICE and your reply will be spoken aloud. "
+                "Answer in 1-3 short sentences of plain spoken language. No markdown, "
+                "no code blocks, no bullet lists, no URLs — just what you'd say out loud.\n\n"
+            )
         if facts:
             system += f"## What you know about the user\n{facts}\n\n"
         if context:

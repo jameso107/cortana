@@ -43,6 +43,8 @@ BUILTIN_PLUGINS = [
     "cortana.plugins.builtin.reminders",
     "cortana.plugins.builtin.code_assistant",
     "cortana.plugins.builtin.briefing",
+    "cortana.plugins.builtin.perception",
+    "cortana.plugins.builtin.scheduler",
 ]
 
 
@@ -148,6 +150,15 @@ class PluginRegistry:
     def manifests(self) -> list[dict]:
         """All loaded plugins' capability manifests (for a plugin manager UI)."""
         return [p.manifest() for p in self._plugins.values()]
+
+    def spawn_background_tasks(self) -> list:
+        """Spawn background_task() loops for plugins that override the default."""
+        tasks = []
+        for p in self._plugins.values():
+            if type(p).background_task is not PluginBase.background_task:
+                tasks.append(asyncio.create_task(p.background_task()))
+                log.info("Spawned background task for plugin %s.", p.name)
+        return tasks
 
     def get_tool_schemas(self) -> list[dict]:
         return [p.register() for p in self._plugins.values()]

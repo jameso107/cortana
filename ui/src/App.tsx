@@ -49,7 +49,11 @@ export default function App() {
   const [streaming, setStreaming] = useState<string | null>(null)
   const [toolActivity, setToolActivity] = useState<string | null>(null)
   const [reasoning, setReasoning] = useState(false)
+  const [toasts, setToasts] = useState<{ id: number; title: string; body: string }[]>([])
+  const toastId = useRef(0)
   const wsRef = useRef<WebSocket | null>(null)
+
+  const dismissToast = (id: number) => setToasts(p => p.filter(t => t.id !== id))
 
   useEffect(() => {
     const connect = () => {
@@ -72,6 +76,14 @@ export default function App() {
           }
           if (data.type === 'tool') setToolActivity(data.name)
           if (data.type === 'reasoning') setReasoning(data.value === 'start')
+          if (data.type === 'notification') {
+            const id = ++toastId.current
+            setToasts(p => [...p, { id, title: data.title, body: data.body }])
+            setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 9000)
+          }
+          if (data.type === 'session_reset') {
+            setMessages([{ role: 'cortana', text: 'New conversation started.', ts: Date.now() }])
+          }
           if (data.type === 'voice_input') {
             setMessages(prev => [...prev, { role: 'user', text: `🎤 ${data.text}`, ts: Date.now() }])
           }
@@ -116,12 +128,24 @@ export default function App() {
   const send = () => { sendText(input); setInput('') }
   const stop = () => wsRef.current?.readyState === WebSocket.OPEN &&
     wsRef.current.send(JSON.stringify({ type: 'stop' }))
+  const resetChat = () => wsRef.current?.readyState === WebSocket.OPEN &&
+    wsRef.current.send(JSON.stringify({ type: 'reset' }))
 
   const isChat = activeTab === 'chat'
 
   return (
     <div className={`app ${isChat ? 'mode-chat' : 'mode-panel'}`}>
       <div className="brain-bg"><BrainOrb status={status} /></div>
+
+      {/* ── Proactive notifications ── */}
+      <div className="toasts">
+        {toasts.map(t => (
+          <div key={t.id} className="toast" onClick={() => dismissToast(t.id)}>
+            <div className="toast-title">🔔 {t.title}</div>
+            <div className="toast-body">{t.body}</div>
+          </div>
+        ))}
+      </div>
 
       {/* ── Top command bar ── */}
       <header className="hud-top">
@@ -168,6 +192,7 @@ export default function App() {
                   {q.label}
                 </button>
               ))}
+              <button className="quick-chip reset" onClick={resetChat} title="Start a new conversation">⟲ New</button>
             </div>
             <div className="input-row">
               <div className="input-icon">◈</div>
