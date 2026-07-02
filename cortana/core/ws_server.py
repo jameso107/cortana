@@ -35,18 +35,32 @@ async def broadcast(msg: dict):
     )
 
 
-async def _run_turn(orchestrator, text: str):
-    """Run one chat turn, streaming events to clients. Cancellable via 'stop'."""
+async def _send(ws: WebSocketServerProtocol, msg: dict):
+    """Send one message to a single client, ignoring a closed socket."""
+    try:
+        await ws.send(json.dumps(msg))
+    except Exception:
+        pass
+
+
+async def _run_turn(ws: WebSocketServerProtocol, orchestrator, text: str):
+    """
+    Run one chat turn, streaming events to the REQUESTING client only.
+
+    Turn events (status, stream_*, tool, reasoning) go to the socket that asked,
+    so two open windows don't cross-contaminate each other's chat. Genuinely
+    global events (proactive notifications, voice input) still use broadcast().
+    """
     from cortana.core.orchestrator import Request
 
     async def emit(ev: dict):
-        await broadcast(ev)
+        await _send(ws, ev)
 
-    await broadcast({"type": "status", "value": "thinking"})
+    await _send(ws, {"type": "status", "value": "thinking"})
     # The final answer arrives incrementally via stream_* events, so we do NOT
     # also send a "message" here (that would duplicate it).
     await orchestrator.handle(Request(text=text, source="text"), emit=emit)
-    await broadcast({"type": "status", "value": "idle"})
+    await _send(ws, {"type": "status", "value": "idle"})
 
 
 async def handle(ws: WebSocketServerProtocol, orchestrator):
@@ -81,9 +95,9 @@ async def handle(ws: WebSocketServerProtocol, orchestrator):
                         await current
                     except asyncio.CancelledError:
                         pass
-                    await broadcast({"type": "stream_cancel"})
-                    await broadcast({"type": "message", "text": "⏹ _Generation stopped._"})
-                    await broadcast({"type": "status", "value": "idle"})
+                    await _send(ws, {"type": "stream_cancel"})
+                    await _send(ws, {"type": "message", "text": "⏹ _Generation stopped._"})
+                    await _send(ws, {"type": "status", "value": "idle"})
                 continue
 
             if msg_type != "message":
@@ -93,12 +107,12 @@ async def handle(ws: WebSocketServerProtocol, orchestrator):
             if not text:
                 continue
 
-            # One turn at a time — ignore new prompts while busy.
+            # One turn at a time per connection — ignore new prompts while busy.
             if current and not current.done():
-                await broadcast({"type": "message", "text": "_Still working on the previous request — hit Stop to interrupt._"})
+                await _send(ws, {"type": "message", "text": "_Still working on the previous request — hit Stop to interrupt._"})
                 continue
 
-            current = asyncio.create_task(_run_turn(orchestrator, text))
+            current = asyncio.create_task(_run_turn(ws, orchestrator, text))
 
     except websockets.exceptions.ConnectionClosed:
         pass

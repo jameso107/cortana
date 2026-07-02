@@ -7,21 +7,27 @@ name = "cortana"
 version = "0.1.0"
 description = "Local, privacy-first AI personal assistant for macOS"
 requires-python = ">=3.11"
+# API-fragile deps carry upper bounds: chromadb's collection API and openai's
+# tool-call streaming shape have both broken across minor versions, and this
+# code depends on the current behavior. Commit a lockfile (uv/pip-tools) for
+# fully reproducible installs of a long-lived local daemon.
 dependencies = [
-    "openai>=1.0",           # llama.cpp OpenAI-compat client
-    "chromadb>=0.5",         # episodic memory
-    "pyzmq>=26",             # message bus
-    "pydantic>=2.0",         # config / data models
-    "httpx>=0.27",           # async HTTP (web fetch plugin)
+    "openai>=1.0,<2",        # llama.cpp OpenAI-compat client (tool-call stream shape)
+    "chromadb>=0.5,<0.6",    # episodic memory (collection API churns across minors)
+    "pydantic>=2.0,<3",      # config / data models
+    "httpx>=0.27",           # async HTTP (inference client, web fetch, embeddings)
     "beautifulsoup4>=4.12",  # HTML parsing
     "pyaudio>=0.2",          # mic capture
+    "sounddevice>=0.4",      # audio capture/playback (voice pipeline)
+    "numpy>=1.26",           # audio buffers (voice pipeline)
     "pyperclip>=1.8",        # clipboard plugin
-    "pyyaml>=6.0",           # plugin manifests
+    "pyyaml>=6.0",           # config + plugin manifests
+    "psutil>=5.9",           # system stats (file/stats server)
+    "aiohttp>=3.9",          # HTTP API server
     "rich>=13",              # terminal output
     "typer>=0.12",           # CLI
-    "watchdog>=4",           # plugin hot-reload
     "feedparser>=6",         # RSS news plugin
-    "faster-whisper>=1.0",   # STT (whisper.cpp Python bindings)
+    "faster-whisper>=1.0",   # STT
     "websockets>=12",        # WebSocket servers (chat + terminal)
     "ptyprocess>=0.7",       # PTY for browser terminal
     "kokoro-onnx>=0.4",      # Kokoro TTS
@@ -33,6 +39,10 @@ dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
 
 [project.scripts]
 cortana = "cortana.cli:app"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100

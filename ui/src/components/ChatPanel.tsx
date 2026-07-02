@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Message } from '../App'
 import { renderMarkdown } from '../markdown'
 
@@ -17,6 +17,8 @@ function timeOf(ts: number): string {
 function Bubble({ m }: { m: Message }) {
   const [copied, setCopied] = useState(false)
   const isCortana = m.role === 'cortana'
+  // Render markdown once per finalized message, not on every parent re-render.
+  const html = useMemo(() => (isCortana ? renderMarkdown(m.text) : ''), [isCortana, m.text])
 
   const copy = () => {
     navigator.clipboard?.writeText(m.text)
@@ -34,7 +36,7 @@ function Bubble({ m }: { m: Message }) {
         </button>
       </div>
       {isCortana
-        ? <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }} />
+        ? <div className="md" dangerouslySetInnerHTML={{ __html: html }} />
         : <div className="msg-text">{m.text}</div>}
     </div>
   )
@@ -44,7 +46,9 @@ export default function ChatPanel({ messages, streaming, toolActivity, reasoning
   const bottomRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    // Instant (not smooth) scroll: a smooth animation fired on every streamed
+    // token stacks up and janks the main thread during a reply.
+    bottomRef.current?.scrollIntoView({ behavior: 'auto' })
   }, [messages, streaming, toolActivity])
 
   // Delegate clicks on code "copy" buttons inside rendered markdown.
@@ -63,7 +67,7 @@ export default function ChatPanel({ messages, streaming, toolActivity, reasoning
 
   return (
     <div className="chat-panel" ref={panelRef} onClick={onClick}>
-      {messages.map((m, i) => <Bubble key={i} m={m} />)}
+      {messages.map(m => <Bubble key={m.id} m={m} />)}
 
       {reasoning && (
         <div className="tool-activity reasoning-pill">💭 Reasoning<span className="dots">…</span></div>
@@ -76,7 +80,10 @@ export default function ChatPanel({ messages, streaming, toolActivity, reasoning
       {streaming != null && (
         <div className="message cortana streaming">
           <div className="message-head"><span className="message-label">CORTANA</span></div>
-          <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) }} />
+          {/* Render the live stream as plain text — re-parsing markdown on every
+              token is O(n²) over the reply. Markdown renders once at stream_end,
+              when the finalized message becomes a Bubble. */}
+          <div className="md streaming-text">{streaming}</div>
           <span className="caret">▋</span>
         </div>
       )}
