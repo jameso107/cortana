@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
+import os
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -12,16 +15,46 @@ app = typer.Typer(name="cortana", help="Cortana local AI assistant")
 console = Console()
 
 
+def _setup_logging(debug: bool):
+    """
+    Configure logging from cortana.yaml's `logging` block: a rotating file
+    handler at the configured path plus a console handler. Falls back to plain
+    console logging if the config or log directory is unavailable, so logging
+    never blocks startup.
+    """
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.handlers.clear()
+
+    console_h = logging.StreamHandler()
+    console_h.setFormatter(fmt)
+    root.addHandler(console_h)
+
+    level = logging.DEBUG if debug else logging.INFO
+    try:
+        from cortana.config import get_config
+        cfg = get_config().logging
+        level = getattr(logging, cfg.level.upper(), level) if not debug else logging.DEBUG
+        path = Path(os.path.expanduser(cfg.path))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_h = logging.handlers.RotatingFileHandler(
+            path, maxBytes=cfg.max_bytes, backupCount=cfg.backup_count,
+        )
+        file_h.setFormatter(fmt)
+        root.addHandler(file_h)
+    except Exception as exc:  # never let logging setup break the daemon
+        console.print(f"[yellow]File logging unavailable ({exc}); using console only.[/yellow]")
+
+    root.setLevel(level)
+
+
 @app.command()
 def start(
     voice: bool = typer.Option(False, "--voice", "-v", help="Enable voice I/O"),
     debug: bool = typer.Option(False, "--debug", help="Verbose logging"),
 ):
     """Start the Cortana assistant daemon (chat WebSocket + optional voice)."""
-    logging.basicConfig(
-        level=logging.DEBUG if debug else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    _setup_logging(debug)
     asyncio.run(_run(voice=voice))
 
 

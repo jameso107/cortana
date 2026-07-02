@@ -1,6 +1,9 @@
 """System control plugin — volume, brightness, DND, app control via AppleScript/subprocess."""
 from __future__ import annotations
-import subprocess
+
+import asyncio
+
+from cortana.plugins._osa import run_cmd, run_osa
 from cortana.plugins.base import PluginBase
 
 
@@ -47,66 +50,66 @@ class Plugin(PluginBase):
         value  = args.get("value", "")
         app    = args.get("app", "")
 
-        # ── Volume ────────────────────────────────────────────
-        if action == "set_volume":
-            level = max(0, min(100, int(float(value)))) if value else 50
-            subprocess.run(["osascript", "-e", f"set volume output volume {level}"], check=True)
-            return f"Volume set to {level}%."
+        try:
+            # ── Volume ────────────────────────────────────────────
+            if action == "set_volume":
+                level = max(0, min(100, int(float(value)))) if value else 50
+                await run_osa(f"set volume output volume {level}")
+                return f"Volume set to {level}%."
 
-        if action == "get_volume":
-            r = subprocess.run(
-                ["osascript", "-e", "output volume of (get volume settings)"],
-                capture_output=True, text=True,
-            )
-            return f"Volume is {r.stdout.strip()}%."
+            if action == "get_volume":
+                r = await run_osa("output volume of (get volume settings)")
+                return f"Volume is {r.stdout.strip()}%."
 
-        if action == "mute":
-            subprocess.run(["osascript", "-e", "set volume with output muted"], check=True)
-            return "Muted."
+            if action == "mute":
+                await run_osa("set volume with output muted")
+                return "Muted."
 
-        if action == "unmute":
-            subprocess.run(["osascript", "-e", "set volume without output muted"], check=True)
-            return "Unmuted."
+            if action == "unmute":
+                await run_osa("set volume without output muted")
+                return "Unmuted."
 
-        # ── Brightness ────────────────────────────────────────
-        if action == "set_brightness":
-            level = max(0, min(100, int(float(value)))) if value else 100
-            # Press brightness-up (key 144) or brightness-down (key 145) 16 times
-            # to sweep full range, then adjust. Simpler: hold key for the right count.
-            # Strategy: tap brightness-down 16x to go to 0, then tap brightness-up N times.
-            steps = round(level / 6.25)  # 16 steps cover 0-100%
-            down16 = " & ".join(['key code 145'] * 16)
-            up_n   = " & ".join(['key code 144'] * steps) if steps > 0 else ""
-            script = f'tell application "System Events"\n  key code 145\n  {down16}\nend tell'
-            if up_n:
-                script += f'\ntell application "System Events"\n  {up_n}\nend tell'
-            subprocess.run(["osascript", "-e", script], capture_output=True)
-            return f"Brightness set to ~{level}%."
+            # ── Brightness ────────────────────────────────────────
+            if action == "set_brightness":
+                level = max(0, min(100, int(float(value)))) if value else 100
+                # Sweep to 0 with 16 brightness-down taps, then N up taps.
+                # (macOS has no scriptable absolute-brightness API without a helper.)
+                steps = round(level / 6.25)  # 16 steps cover 0-100%
+                down16 = "\n  ".join(['key code 145'] * 16)
+                script = f'tell application "System Events"\n  {down16}\nend tell'
+                if steps > 0:
+                    up_n = "\n  ".join(['key code 144'] * steps)
+                    script += f'\ntell application "System Events"\n  {up_n}\nend tell'
+                await run_osa(script)
+                return f"Brightness set to ~{level}%."
 
-        if action == "get_brightness":
-            return "Brightness level not readable directly; use set_brightness to adjust."
+            if action == "get_brightness":
+                return "Brightness level not readable directly; use set_brightness to adjust."
 
-        # ── Apps ──────────────────────────────────────────────
-        if action == "launch_app":
-            subprocess.run(["open", "-a", app], check=True)
-            return f"Launched {app}."
+            # ── Apps ──────────────────────────────────────────────
+            if action == "launch_app":
+                await run_cmd(["open", "-a", app])
+                return f"Launched {app}."
 
-        if action == "quit_app":
-            subprocess.run(["osascript", "-e", f'quit app "{app}"'])
-            return f"Quit {app}."
+            if action == "quit_app":
+                await run_osa(f'quit app "{app}"')
+                return f"Quit {app}."
 
-        # ── DND / Lock ────────────────────────────────────────
-        if action == "set_dnd":
-            on = value.lower() in ("on", "1", "true", "yes")
-            label = "Turn On Do Not Disturb" if on else "Turn Off Do Not Disturb"
-            subprocess.run(["shortcuts", "run", label])
-            return f"Do Not Disturb {'on' if on else 'off'}."
+            # ── DND / Lock ────────────────────────────────────────
+            if action == "set_dnd":
+                on = value.lower() in ("on", "1", "true", "yes")
+                label = "Turn On Do Not Disturb" if on else "Turn Off Do Not Disturb"
+                await run_cmd(["shortcuts", "run", label])
+                return f"Do Not Disturb {'on' if on else 'off'}."
 
-        if action == "lock_screen":
-            subprocess.run([
-                "osascript", "-e",
-                'tell application "System Events" to keystroke "q" using {control down, command down}',
-            ])
-            return "Screen locked."
+            if action == "lock_screen":
+                await run_osa(
+                    'tell application "System Events" to keystroke "q" using {control down, command down}'
+                )
+                return "Screen locked."
 
-        return "Unknown system action."
+            return "Unknown system action."
+        except asyncio.TimeoutError:
+            return f"Error: system command '{action}' did not respond in time."
+        except Exception as exc:
+            return f"System control error: {exc}"

@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import queue
+import re
 
 import numpy as np
 import sounddevice as sd
@@ -19,9 +20,11 @@ log = logging.getLogger(__name__)
 
 SAMPLE_RATE    = 16000
 CHUNK          = 512          # 32ms per VAD chunk
-SILENCE_THRESH = 0.015
-SILENCE_SEC    = 1.2
 MAX_RECORD_SEC = 30
+MIN_SPEECH_SEC = 0.3          # ignore sub-300ms blips (coughs, transients)
+
+# Sentence-boundary splitter for streaming TTS (speak each sentence as it lands).
+_SENTENCE_RE = re.compile(r".+?[.!?…](?:\s|$)|.+?[\n]", re.S)
 
 
 class VoicePipeline:
@@ -37,6 +40,9 @@ class VoicePipeline:
         self._kokoro      = None
         self._loop        = None
         self._audio_q: queue.Queue[np.ndarray] = queue.Queue()
+        # Endpointing / VAD tuning, driven by config (previously hardcoded).
+        self._silence_sec   = self.cfg.silence_ms / 1000.0
+        self._vad_threshold = self.cfg.vad_threshold
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -67,8 +73,9 @@ class VoicePipeline:
 
     def _load_whisper(self):
         from faster_whisper import WhisperModel
-        self._whisper = WhisperModel("medium.en", device="cpu", compute_type="int8")
-        log.info("Whisper medium.en loaded.")
+        model = self.cfg.stt_model or "medium.en"
+        self._whisper = WhisperModel(model, device="cpu", compute_type="int8")
+        log.info("Whisper %s loaded.", model)
 
     def _load_tts(self):
         tts_dir = os.path.expanduser("~/.cortana/models/tts")
@@ -117,10 +124,17 @@ class VoicePipeline:
         """Record one utterance (VAD-gated) and dispatch it."""
         import torch
 
+        # Silero VAD is a stateful RNN; clear hidden state so each utterance is
+        # scored independently and the onset of a new one isn't clipped.
+        if hasattr(self._vad, "reset_states"):
+            self._vad.reset_states()
+
         speech_frames: list[np.ndarray] = []
+        speech_chunks = 0
         in_speech     = False
         silence_count = 0
-        sil_needed    = int(SILENCE_SEC * SAMPLE_RATE / CHUNK)
+        sil_needed    = max(int(self._silence_sec * SAMPLE_RATE / CHUNK), 1)
+        min_speech    = max(int(MIN_SPEECH_SEC * SAMPLE_RATE / CHUNK), 1)
         max_chunks    = int(MAX_RECORD_SEC * SAMPLE_RATE / CHUNK)
 
         while self._listening and len(speech_frames) < max_chunks:
@@ -135,9 +149,10 @@ class VoicePipeline:
             t_chunk     = torch.from_numpy(chunk)
             speech_prob = float(self._vad(t_chunk, SAMPLE_RATE).item())
 
-            if speech_prob > 0.5:
+            if speech_prob > self._vad_threshold:
                 in_speech = True
                 speech_frames.append(chunk)
+                speech_chunks += 1
                 silence_count = 0
             elif in_speech:
                 speech_frames.append(chunk)
@@ -145,10 +160,15 @@ class VoicePipeline:
                 if silence_count >= sil_needed:
                     break  # end of utterance
 
-        if not speech_frames or not in_speech:
+        # Require a minimum amount of actual speech so a cough/transient over the
+        # VAD threshold doesn't trigger a full transcribe + turn on noise.
+        if not in_speech or speech_chunks < min_speech:
             return
 
-        audio = np.concatenate(speech_frames)
+        # Trim the trailing silence tail (keep a small pad) before transcription
+        # so whisper doesn't waste work and hallucinate trailing tokens.
+        keep = max(len(speech_frames) - silence_count + 2, speech_chunks)
+        audio = np.concatenate(speech_frames[:keep])
         asyncio.run_coroutine_threadsafe(
             self._handle_utterance(audio), self._loop
         )
@@ -168,13 +188,70 @@ class VoicePipeline:
         await broadcast({"type": "voice_input", "text": text})
         await broadcast({"type": "status", "value": "thinking"})
 
-        response = await self.orchestrator.handle(Request(text=text, source="voice"))
+        # Stream the reply into sentence-chunked TTS so speech begins after the
+        # first sentence, not after the whole answer is generated + synthesized.
+        # A background player consumes sentences while generation continues.
+        self._speaking = True  # gate the mic for the whole spoken reply
+        speech_q: asyncio.Queue[str | None] = asyncio.Queue()
+        player = asyncio.create_task(self._play_queue(speech_q))
+        buf = ""
+        spoke_streaming = False
+        speaking_announced = False
 
-        if response.text:
+        async def emit(ev: dict):
+            nonlocal buf, spoke_streaming, speaking_announced
+            etype = ev.get("type")
+            # Forward stream events to any connected UI so voice replies stream there too.
+            await broadcast(ev)
+            if etype == "stream_delta":
+                if not speaking_announced:
+                    await broadcast({"type": "status", "value": "speaking"})
+                    speaking_announced = True
+                buf += ev.get("text", "")
+                sentences, buf = self._split_sentences(buf)
+                for s in sentences:
+                    spoke_streaming = True
+                    await speech_q.put(s)
+            elif etype == "stream_cancel":
+                buf = ""  # preamble before a tool call — not the spoken reply
+            elif etype == "error":
+                buf = ""  # transient failure — say nothing
+
+        response = await self.orchestrator.handle(Request(text=text, source="voice"), emit=emit)
+
+        # Flush any remaining buffered text; if nothing streamed (e.g. a fallback
+        # reply), speak the final response text as a whole.
+        tail = buf.strip()
+        if tail:
+            await speech_q.put(tail)
+        elif not spoke_streaming and response.text:
             await broadcast({"type": "status", "value": "speaking"})
-            await broadcast({"type": "message", "text": response.text})
-            await self.speak(response.text)
-            await broadcast({"type": "status", "value": "listening"})
+            await speech_q.put(response.text)
+
+        await speech_q.put(None)   # sentinel: no more sentences
+        await player               # wait for playback to finish
+        self._speaking = False
+        await broadcast({"type": "status", "value": "listening"})
+
+    async def _play_queue(self, q: "asyncio.Queue[str | None]"):
+        """Consume sentences and speak them in order; playback overlaps ongoing generation."""
+        while True:
+            item = await q.get()
+            if item is None:
+                break
+            item = item.strip()
+            if item:
+                await asyncio.to_thread(self._play_tts, item)
+
+    @staticmethod
+    def _split_sentences(buf: str) -> tuple[list[str], str]:
+        """Split off complete sentences from buf; return (sentences, remainder)."""
+        sentences: list[str] = []
+        pos = 0
+        for m in _SENTENCE_RE.finditer(buf):
+            sentences.append(m.group().strip())
+            pos = m.end()
+        return [s for s in sentences if s], buf[pos:]
 
     def _transcribe(self, audio: np.ndarray) -> str:
         segs, _ = self._whisper.transcribe(audio, beam_size=5, language="en")

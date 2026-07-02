@@ -7,11 +7,11 @@
 
 | Layer | Technology |
 |-------|-----------|
-| Inference | llama.cpp · Qwen 3.6-27B Q6 · Metal GPU |
-| STT | whisper.cpp (CoreML) · OpenWakeWord |
-| TTS | Kokoro (local) · macOS fallback |
+| Inference | llama.cpp · Qwen3-30B-A3B Q6 · Metal GPU |
+| STT | faster-whisper (`medium.en`, CPU) · UI-toggle activation |
+| TTS | Kokoro (local) · macOS `say` fallback |
 | Memory | ChromaDB (episodic) · SQLite (structured) |
-| Plugins | Python modules · ZeroMQ bus |
+| Plugins | Python modules · in-process async dispatch |
 | UI | React + Vite · Canvas brain orb |
 
 ## Quick start
@@ -25,8 +25,8 @@ pip install -e ".[dev]"
 cd ui && npm install && npm run dev
 
 # 3. Start llama.cpp server (once model is downloaded)
-llama-server -m ~/.cortana/models/Qwen3-27B-Instruct-Q6_K_M.gguf \
-  --port 8080 --ctx-size 16384 --n-gpu-layers 99
+llama-server -m ~/.cortana/models/Qwen3-30B-A3B-Q6_K.gguf \
+  --port 8080 --ctx-size 16384 --n-gpu-layers 99 --parallel 1
 
 # 4. Run Cortana (text mode)
 cortana start
@@ -71,4 +71,6 @@ class Plugin(PluginBase):
         return "result"
 ```
 
-Cortana hot-reloads plugins without restart.
+Built-in plugins load at startup; third-party plugins in `~/.cortana/plugins/`
+are loaded once their file hash is approved in `~/.cortana/approved_plugins.json`.
+(Live hot-reload is not yet implemented — restart the daemon to pick up changes.)

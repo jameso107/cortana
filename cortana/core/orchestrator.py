@@ -2,11 +2,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Awaitable, Callable
 
 log = logging.getLogger(__name__)
+
+TRACE_LOG = Path.home() / ".cortana" / "logs" / "traces.jsonl"
+
+
+def _est_tokens(text: str) -> int:
+    """Cheap token estimate (~4 chars/token) — good enough for budgeting."""
+    return (len(text) + 3) // 4
 
 # An async callback the orchestrator uses to stream events to a UI.
 # Receives dicts like {"type": "stream_delta", "text": "..."}.
@@ -60,11 +72,18 @@ class Orchestrator:
         self._max_steps = cfg.agent.max_steps
         self._inject_facts = cfg.agent.inject_facts
         self._reasoning = cfg.agent.reasoning  # "auto" | "always" | "never"
+        self._context_window = cfg.inference.context_window
+        self._reply_reserve = cfg.inference.reply_reserve_tokens
+        self._memory_token_budget = cfg.memory.context_tokens
         # Per-session conversation history so Cortana remembers the running
         # conversation across turns (and across UI reconnects). Keyed by
         # session_id; a single shared "default" session unifies text + voice.
         self._sessions: dict[str, list[dict]] = {}
-        self._history_max = 24  # messages kept before oldest are dropped (~12 turns)
+        self._history_max = 60  # hard backstop; token budgeting is the real control
+        # Serialize every turn (text, voice, scheduler) across the single
+        # shared session and the single-slot llama-server. Without this, two
+        # sources mutate the same history list and double-hit the backend.
+        self._turn_lock = asyncio.Lock()
         self._running = False
 
     def reset_session(self, session_id: str = "default"):
@@ -124,14 +143,16 @@ class Orchestrator:
         """
         Process one user turn through a multi-step ReAct-style agent loop.
 
-        The model may call tools repeatedly (search → fetch → summarize → …),
-        observing each result before deciding the next action, up to max_steps.
-
-        If `emit` is provided, the final natural-language answer is streamed
-        token-by-token via stream_* events; otherwise the full text is returned
-        only in the Response (used by the voice/CLI paths).
+        The whole turn is serialized behind a lock so overlapping sources (text,
+        voice, scheduler) can't corrupt the shared session or double-hit the
+        single-slot backend. See _handle_locked for the loop itself.
         """
+        async with self._turn_lock:
+            return await self._handle_locked(request, emit)
+
+    async def _handle_locked(self, request: Request, emit: EmitFn | None = None) -> Response:
         log.debug("Handling request: %s", request.text)
+        t0 = time.perf_counter()
 
         session_id = request.session_id or "default"
         history = self._sessions.setdefault(session_id, [])
@@ -144,15 +165,18 @@ class Orchestrator:
         prefix = self._reasoning_prefix(request.text)
         think_mode = prefix == "/think"
         context = await retrieve_task
-        messages = self._build_messages(request, context, facts, history, prefix)
+        messages = self._build_messages(request, context, facts, history, prefix, tools)
 
         final_text = ""
         all_tool_calls: list[dict] = []
         reasoning_open = False
+        failed = False
+        ttft_ms: float | None = None
+        trace_steps: list[dict] = []
+        # Messages produced by THIS turn (assistant + tool results), persisted to
+        # history so cross-turn follow-ups ("open the second result") have grounding.
+        turn_messages: list[dict] = [{"role": "user", "content": request.text}]
 
-        # Show a "thinking…" indicator whenever we routed this turn into reasoning
-        # mode (driven by our own decision — this Qwen build doesn't emit inline
-        # <think> tags, so we can't rely on detecting them).
         async def close_reasoning():
             nonlocal reasoning_open
             if reasoning_open and emit:
@@ -164,6 +188,7 @@ class Orchestrator:
             reasoning_open = True
 
         for step in range(self._max_steps):
+            step_t0 = time.perf_counter()
             full_text = ""
             tool_calls = None
             streamed_any = False
@@ -172,6 +197,8 @@ class Orchestrator:
 
             async for ev in self.inference.chat_stream(messages, tools):
                 if ev["type"] == "delta":
+                    if ttft_ms is None:
+                        ttft_ms = round((time.perf_counter() - t0) * 1000, 1)
                     if not emit:
                         continue
                     buf += ev["text"]
@@ -186,6 +213,17 @@ class Orchestrator:
                 else:  # done
                     full_text = ev["text"]
                     tool_calls = ev["tool_calls"]
+                    failed = bool(ev.get("error"))
+
+            # Backend failure: surface a transient error, DON'T persist the turn.
+            if failed:
+                if streamed_any and emit:
+                    await emit({"type": "stream_cancel"})
+                await close_reasoning()
+                if emit:
+                    await emit({"type": "error", "text": full_text})
+                log.warning("Turn failed: inference backend unreachable.")
+                return Response(text=full_text, tool_calls=all_tool_calls)
 
             if tool_calls:
                 # This step is an action, not the final answer. Any preamble we
@@ -209,14 +247,25 @@ class Orchestrator:
                     }
                     for tc in tool_calls
                 ]
-                messages += [
+                step_msgs = [
                     {"role": "assistant", "content": self._strip_think(full_text)[0].strip(), "tool_calls": formatted_calls},
                     *tool_results,
                 ]
+                messages += step_msgs
+                turn_messages += step_msgs
+                trace_steps.append({
+                    "step": step,
+                    "tools": [tc["name"] for tc in tool_calls],
+                    "ms": round((time.perf_counter() - step_t0) * 1000, 1),
+                })
                 continue
 
             # No tool calls → this is the final answer (with reasoning stripped).
             final_text = self._strip_think(full_text)[0].strip()
+            trace_steps.append({
+                "step": step, "tools": [],
+                "ms": round((time.perf_counter() - step_t0) * 1000, 1),
+            })
             if emit:
                 await close_reasoning()
                 if not streamed_any:
@@ -234,13 +283,71 @@ class Orchestrator:
                 await emit({"type": "stream_start"})
                 await emit({"type": "stream_end", "text": final_text})
 
-        # Persist the turn to the running conversation + episodic memory.
-        history.append({"role": "user", "content": request.text})
-        history.append({"role": "assistant", "content": final_text})
-        if len(history) > self._history_max:
-            del history[: len(history) - self._history_max]
+        # Persist the full turn (user + any tool actions + final answer) to the
+        # running conversation, then trim to budget. Episodic memory gets the
+        # user/assistant pair.
+        turn_messages.append({"role": "assistant", "content": final_text})
+        history.extend(turn_messages)
+        self._trim_history(history, tools)
         await self.memory.save(request.text, final_text)
+
+        self._write_trace({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "source": request.source,
+            "session": session_id,
+            "think": think_mode,
+            "steps": trace_steps,
+            "tool_calls": [tc["name"] for tc in all_tool_calls],
+            "ttft_ms": ttft_ms,
+            "total_ms": round((time.perf_counter() - t0) * 1000, 1),
+            "reply_chars": len(final_text),
+        })
         return Response(text=final_text, tool_calls=all_tool_calls)
+
+    def _trim_history(self, history: list[dict], tools: list[dict]) -> None:
+        """
+        Trim session history to fit the model's context window (token-budgeted),
+        dropping whole oldest turns so a 'tool' message is never orphaned from
+        its assistant tool_calls. A message-count backstop bounds memory too.
+        """
+        # Backstop first: drop oldest whole turns past the message cap.
+        while len(history) > self._history_max:
+            self._drop_oldest_turn(history)
+
+        overhead = _est_tokens(json.dumps(tools)) + _est_tokens(self._system_base())
+        budget = self._context_window - self._reply_reserve - overhead
+        if budget <= 0:
+            return
+        while history and self._est_history_tokens(history) > budget:
+            if not self._drop_oldest_turn(history):
+                break
+
+    @staticmethod
+    def _drop_oldest_turn(history: list[dict]) -> bool:
+        """Delete the oldest complete turn (up to the next 'user' message). Returns True if anything was dropped."""
+        if not history:
+            return False
+        # Find the start of the second turn (next 'user' after index 0).
+        for i in range(1, len(history)):
+            if history[i].get("role") == "user":
+                del history[:i]
+                return True
+        # Only one turn present — drop it entirely rather than exceed budget.
+        history.clear()
+        return True
+
+    @staticmethod
+    def _est_history_tokens(history: list[dict]) -> int:
+        return sum(_est_tokens(json.dumps(m)) for m in history)
+
+    def _write_trace(self, record: dict) -> None:
+        """Append one structured per-turn trace line (best-effort)."""
+        try:
+            TRACE_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with TRACE_LOG.open("a") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as exc:
+            log.debug("trace write failed: %s", exc)
 
     @staticmethod
     def _strip_think(text: str) -> tuple[str, bool]:
@@ -266,9 +373,11 @@ class Orchestrator:
                 return visible[:-n]
         return visible
 
-    def _build_messages(self, request: Request, context: str, facts: str,
-                        history: list[dict] | None = None, prefix: str = "") -> list[dict]:
-        import os
+    def _system_base(self) -> str:
+        """The static system prompt (no per-turn facts/memory). Cached; also used for token overhead estimation."""
+        cached = getattr(self, "_system_base_cache", None)
+        if cached is not None:
+            return cached
         repo_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..")
         )
@@ -323,6 +432,20 @@ class Orchestrator:
             "Keep responses concise and direct. Confirm before destructive or "
             "irreversible actions.\n\n"
         )
+        self._system_base_cache = system
+        return system
+
+    def _cap_tokens(self, text: str, budget: int) -> str:
+        """Truncate text to an approximate token budget, noting the cut."""
+        if budget <= 0 or _est_tokens(text) <= budget:
+            return text
+        keep = max(budget * 4 - 40, 0)
+        return text[:keep].rstrip() + "\n[… memory truncated to fit context budget]\n"
+
+    def _build_messages(self, request: Request, context: str, facts: str,
+                        history: list[dict] | None = None, prefix: str = "",
+                        tools: list[dict] | None = None) -> list[dict]:
+        system = self._system_base()
         if request.source == "voice":
             system += (
                 "## Voice reply mode\n"
@@ -330,10 +453,14 @@ class Orchestrator:
                 "Answer in 1-3 short sentences of plain spoken language. No markdown, "
                 "no code blocks, no bullet lists, no URLs — just what you'd say out loud.\n\n"
             )
+        # Facts + semantic recall share one token budget so they can't crowd out
+        # the conversation or blow the context window.
+        mem_block = ""
         if facts:
-            system += f"## What you know about the user\n{facts}\n\n"
+            mem_block += f"## What you know about the user\n{facts}\n\n"
         if context:
-            system += f"## Relevant memory (semantic recall of older conversations)\n{context}\n"
+            mem_block += f"## Relevant memory (semantic recall of older conversations)\n{context}\n"
+        system += self._cap_tokens(mem_block, self._memory_token_budget)
 
         if not prefix:
             prefix = self._reasoning_prefix(request.text)

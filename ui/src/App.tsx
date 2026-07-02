@@ -16,10 +16,16 @@ export type Status = 'idle' | 'listening' | 'thinking' | 'speaking'
 export type Tab = 'chat' | 'terminal' | 'search' | 'notes' | 'files' | 'memory' | 'system'
 
 export interface Message {
+  id: number
   role: 'user' | 'cortana'
   text: string
   ts: number
 }
+
+// Stable, unique message ids (index keys smear per-bubble state across re-renders).
+let _mid = 0
+export const mkMsg = (role: 'user' | 'cortana', text: string): Message =>
+  ({ id: ++_mid, role, text, ts: Date.now() })
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'chat',     label: 'Chat',     icon: '◈' },
@@ -47,7 +53,7 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [activeTab, setActiveTab] = useState<Tab>('chat')
   const [messages, setMessages]   = useState<Message[]>([
-    { role: 'cortana', text: 'Cortana online. Systems nominal. How can I assist you?', ts: Date.now() },
+    mkMsg('cortana', 'Cortana online. Systems nominal. How can I assist you?'),
   ])
   const [input, setInput]         = useState('')
   const [voiceOn, setVoiceOn]     = useState(false)
@@ -57,27 +63,38 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: number; title: string; body: string }[]>([])
   const toastId = useRef(0)
   const wsRef = useRef<WebSocket | null>(null)
+  const retryRef = useRef(0)
+  const closedRef = useRef(false)
 
   const dismissToast = (id: number) => setToasts(p => p.filter(t => t.id !== id))
 
   useEffect(() => {
+    // Clear any transient generation state left dangling by a dropped socket so
+    // the UI never gets stuck on a spinner or a half-streamed bubble.
+    const resetTransient = () => { setStreaming(null); setToolActivity(null); setReasoning(false) }
+
     const connect = () => {
       try {
         const ws = new WebSocket(WS_CHAT)
-        ws.onopen  = () => { setConnected(true); setStatus('idle') }
+        ws.onopen  = () => { setConnected(true); setStatus('idle'); retryRef.current = 0 }
         ws.onmessage = (e) => {
           const data = JSON.parse(e.data)
           if (data.type === 'status') setStatus(data.value)
           if (data.type === 'message') {
-            setMessages(prev => [...prev, { role: 'cortana', text: data.text, ts: Date.now() }])
+            setMessages(prev => [...prev, mkMsg('cortana', data.text)])
           }
           if (data.type === 'stream_start') { setStreaming(''); setToolActivity(null) }
           if (data.type === 'stream_delta')  setStreaming(prev => (prev ?? '') + data.text)
           if (data.type === 'stream_cancel') { setStreaming(null); setReasoning(false) }
           if (data.type === 'stream_end') {
             const text = data.text ?? ''
-            if (text) setMessages(prev => [...prev, { role: 'cortana', text, ts: Date.now() }])
-            setStreaming(null); setToolActivity(null); setReasoning(false)
+            if (text) setMessages(prev => [...prev, mkMsg('cortana', text)])
+            resetTransient()
+          }
+          if (data.type === 'error') {
+            resetTransient()
+            setMessages(prev => [...prev, mkMsg('cortana', data.text || '⚠ Something went wrong reaching my inference engine.')])
+            setStatus('idle')
           }
           if (data.type === 'tool') setToolActivity(data.name)
           if (data.type === 'reasoning') setReasoning(data.value === 'start')
@@ -87,19 +104,31 @@ export default function App() {
             setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 9000)
           }
           if (data.type === 'session_reset') {
-            setMessages([{ role: 'cortana', text: 'New conversation started.', ts: Date.now() }])
+            setMessages([mkMsg('cortana', 'New conversation started.')])
           }
           if (data.type === 'voice_input') {
-            setMessages(prev => [...prev, { role: 'user', text: `🎤 ${data.text}`, ts: Date.now() }])
+            setMessages(prev => [...prev, mkMsg('user', `🎤 ${data.text}`)])
           }
           if (data.type === 'voice_mode_ack') setVoiceOn(data.enabled)
         }
-        ws.onclose = () => { setConnected(false); setStatus('idle'); setTimeout(connect, 3000) }
+        ws.onclose = () => {
+          setConnected(false); setStatus('idle'); resetTransient()
+          if (closedRef.current) return
+          // Exponential backoff with jitter and a 30s cap, instead of a fixed 3s
+          // hammer that thundering-herds every window when the daemon restarts.
+          const delay = Math.min(30000, 1000 * 2 ** retryRef.current) + Math.random() * 500
+          retryRef.current += 1
+          setTimeout(connect, delay)
+        }
         wsRef.current = ws
-      } catch { setTimeout(connect, 3000) }
+      } catch {
+        const delay = Math.min(30000, 1000 * 2 ** retryRef.current) + Math.random() * 500
+        retryRef.current += 1
+        setTimeout(connect, delay)
+      }
     }
     connect()
-    return () => wsRef.current?.close()
+    return () => { closedRef.current = true; wsRef.current?.close() }
   }, [])
 
   const toggleVoice = () => {
@@ -114,17 +143,13 @@ export default function App() {
   const sendText = (text: string) => {
     const t = text.trim()
     if (!t) return
-    setMessages(prev => [...prev, { role: 'user', text: t, ts: Date.now() }])
+    setMessages(prev => [...prev, mkMsg('user', t)])
     setStatus('thinking')
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'message', text: t }))
     } else {
       setTimeout(() => {
-        setMessages(prev => [...prev, {
-          role: 'cortana',
-          text: '[ Backend offline — start the Cortana daemon to process requests. ]',
-          ts: Date.now(),
-        }])
+        setMessages(prev => [...prev, mkMsg('cortana', '[ Backend offline — start the Cortana daemon to process requests. ]')])
         setStatus('idle')
       }, 500)
     }

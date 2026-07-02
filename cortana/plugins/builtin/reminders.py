@@ -1,20 +1,11 @@
 """Reminders plugin — set, list, and complete macOS Reminders via AppleScript."""
 from __future__ import annotations
 
-import subprocess
+import asyncio
 
+from cortana.plugins._osa import esc as _esc
+from cortana.plugins._osa import run_osa
 from cortana.plugins.base import PluginBase
-
-
-def _osa(script: str, timeout: int = 20) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=timeout,
-    )
-
-
-def _esc(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
 class Plugin(PluginBase):
@@ -48,21 +39,21 @@ class Plugin(PluginBase):
                 text = (args.get("text") or "").strip()
                 if not text:
                     return "Error: 'text' is required to add a reminder."
-                return self._add(text, list_name)
+                return await self._add(text, list_name)
             if action == "list":
-                return self._list(list_name)
+                return await self._list(list_name)
             if action == "complete":
                 text = (args.get("text") or "").strip()
                 if not text:
                     return "Error: 'text' is required to complete a reminder."
-                return self._complete(text, list_name)
+                return await self._complete(text, list_name)
             return f"Unknown reminders action: {action}"
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             return "Error: Reminders did not respond in time."
         except Exception as exc:
             return f"Reminders error: {exc}"
 
-    def _add(self, text: str, list_name: str) -> str:
+    async def _add(self, text: str, list_name: str) -> str:
         script = f'''
         tell application "Reminders"
             tell list "{_esc(list_name)}"
@@ -70,12 +61,12 @@ class Plugin(PluginBase):
             end tell
         end tell
         '''
-        r = _osa(script)
+        r = await run_osa(script)
         if r.returncode != 0:
             return f"Could not add reminder: {r.stderr.strip()}"
         return f"Added reminder: {text}"
 
-    def _list(self, list_name: str) -> str:
+    async def _list(self, list_name: str) -> str:
         script = f'''
         tell application "Reminders"
             set out to ""
@@ -85,12 +76,12 @@ class Plugin(PluginBase):
             return out
         end tell
         '''
-        r = _osa(script)
+        r = await run_osa(script)
         if r.returncode != 0:
             return f"Could not list reminders: {r.stderr.strip()}"
         return r.stdout.strip() or "No open reminders."
 
-    def _complete(self, text: str, list_name: str) -> str:
+    async def _complete(self, text: str, list_name: str) -> str:
         script = f'''
         tell application "Reminders"
             set matches to (reminders of list "{_esc(list_name)}" whose name is "{_esc(text)}" and completed is false)
@@ -99,7 +90,7 @@ class Plugin(PluginBase):
             return "done"
         end tell
         '''
-        r = _osa(script)
+        r = await run_osa(script)
         if r.returncode != 0:
             return f"Could not complete reminder: {r.stderr.strip()}"
         return f"Completed: {text}" if r.stdout.strip() == "done" else f"No open reminder named '{text}'."

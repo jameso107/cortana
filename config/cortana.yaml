@@ -9,6 +9,9 @@ inference:
   temperature: 0.7
   tool_temperature: 0.2
   flash_attention: true
+  connect_timeout: 10.0
+  request_timeout: 120.0        # abort/fallback if llama-server stalls this long
+  reply_reserve_tokens: 1024    # context kept free for the model's own reply
 
 voice:
   # Voice is toggled from the UI (no wake word). See VoicePipeline.set_listening.
@@ -23,8 +26,10 @@ memory:
   episodic_path: ~/.cortana/memory/chroma
   structured_path: ~/.cortana/memory/cortana.db
   embedding_model: nomic-embed-text
-  context_tokens: 2048        # tokens reserved for memory injection
+  context_tokens: 2048        # max tokens of facts + recall injected per turn
   decay_half_life_days: 30
+  min_similarity: 0.25        # drop recalled memories below this cosine similarity
+  min_query_words: 3          # skip retrieval for very short / pronoun-only turns
 
 plugins:
   directory: ~/.cortana/plugins
@@ -33,6 +38,8 @@ plugins:
 logging:
   level: INFO
   path: ~/.cortana/logs/cortana.log
+  max_bytes: 5000000
+  backup_count: 3
 
 safety:
   confirm_destructive: true

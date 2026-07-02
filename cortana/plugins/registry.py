@@ -1,4 +1,4 @@
-"""Plugin registry — loads, hot-reloads, and dispatches to plugins."""
+"""Plugin registry — loads and dispatches to plugins (in-process, async)."""
 from __future__ import annotations
 
 import asyncio
@@ -164,45 +164,51 @@ class PluginRegistry:
         return [p.register() for p in self._plugins.values()]
 
     async def dispatch(self, tool_calls: list[dict]) -> list[dict]:
-        """Execute tool calls and return tool result messages."""
-        results = []
-        for call in tool_calls:
-            name = call["name"]
-            try:
-                args = json.loads(call.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                args = {}
+        """
+        Execute a step's tool calls concurrently and return tool result messages
+        in the original order. When the model requests several independent tools
+        in one step (e.g. weather + calendar + news), running them in parallel
+        makes the step latency the slowest call instead of the sum. Each call
+        keeps its own timeout and circuit-breaker bookkeeping.
+        """
+        coros = [self._dispatch_one(call) for call in tool_calls]
+        contents = await asyncio.gather(*coros)  # preserves order
+        return [
+            {"role": "tool", "tool_call_id": call["id"], "content": content}
+            for call, content in zip(tool_calls, contents)
+        ]
 
-            plugin = self._plugins.get(name)
-            if plugin is None:
-                content = f"Unknown tool: {name}"
-            elif self._breaker_open(name):
-                content = (
-                    f"{name} is temporarily unavailable (it failed repeatedly and is "
-                    "in a cooldown). Proceed without it or try again shortly."
-                )
-                log.warning("Plugin %s skipped — circuit breaker open.", name)
-            else:
-                try:
-                    content = await asyncio.wait_for(
-                        plugin.handle(name, args), timeout=_DISPATCH_TIMEOUT
-                    )
-                    self._breaker_reset(name)
-                except asyncio.TimeoutError:
-                    self._breaker_record(name)
-                    log.error("Plugin %s timed out after %.0fs.", name, _DISPATCH_TIMEOUT)
-                    content = f"{name} timed out. Proceed without its result."
-                except Exception as exc:
-                    self._breaker_record(name)
-                    log.error("Plugin %s error: %s", name, exc)
-                    content = f"Error in {name}: {exc}"
+    async def _dispatch_one(self, call: dict) -> str:
+        """Execute a single tool call with timeout + circuit-breaker handling; returns the result string."""
+        name = call["name"]
+        try:
+            args = json.loads(call.get("arguments", "{}"))
+        except json.JSONDecodeError:
+            args = {}
 
-            results.append({
-                "role": "tool",
-                "tool_call_id": call["id"],
-                "content": content,
-            })
-        return results
+        plugin = self._plugins.get(name)
+        if plugin is None:
+            return f"Unknown tool: {name}"
+        if self._breaker_open(name):
+            log.warning("Plugin %s skipped — circuit breaker open.", name)
+            return (
+                f"{name} is temporarily unavailable (it failed repeatedly and is "
+                "in a cooldown). Proceed without it or try again shortly."
+            )
+        try:
+            content = await asyncio.wait_for(
+                plugin.handle(name, args), timeout=_DISPATCH_TIMEOUT
+            )
+            self._breaker_reset(name)
+            return content
+        except asyncio.TimeoutError:
+            self._breaker_record(name)
+            log.error("Plugin %s timed out after %.0fs.", name, _DISPATCH_TIMEOUT)
+            return f"{name} timed out. Proceed without its result."
+        except Exception as exc:
+            self._breaker_record(name)
+            log.error("Plugin %s error: %s", name, exc)
+            return f"Error in {name}: {exc}"
 
     # ── Circuit breaker ─────────────────────────────────────────────────────────
     def _breaker_open(self, name: str) -> bool:

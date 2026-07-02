@@ -4,19 +4,37 @@ from __future__ import annotations
 import logging
 from typing import Any, AsyncIterator
 
+import httpx
 from openai import AsyncOpenAI
 
 from cortana.config import get_config
 
 log = logging.getLogger(__name__)
 
+# Shown to the user when the backend is unreachable. Callers check the `error`
+# flag rather than string-matching this, so a failed turn is never persisted as
+# if it were a real reply.
+INFERENCE_ERROR_TEXT = "I'm having trouble reaching my inference engine. Is llama.cpp running?"
+
 
 class InferenceClient:
     def __init__(self):
         cfg = get_config().inference
+        # Explicit timeouts so a wedged llama-server (OOM, stalled Metal context,
+        # model still loading) degrades to the fallback quickly instead of hanging
+        # the turn for the SDK's 600s default. `read` is the max gap between
+        # streamed chunks, so it also catches a mid-generation stall.
+        timeout = httpx.Timeout(
+            connect=cfg.connect_timeout,
+            read=cfg.request_timeout,
+            write=30.0,
+            pool=10.0,
+        )
         self._client = AsyncOpenAI(
             base_url=f"http://{cfg.host}:{cfg.port}/v1",
             api_key="not-needed",  # llama.cpp doesn't need a real key
+            timeout=timeout,
+            max_retries=0,  # the orchestrator owns retry/fallback policy
         )
         self._model = cfg.model
         self._temperature = cfg.temperature
@@ -46,7 +64,7 @@ class InferenceClient:
             response = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:
             log.error("Inference error: %s", exc)
-            return "I'm having trouble reaching my inference engine. Is llama.cpp running?", None
+            return INFERENCE_ERROR_TEXT, None
 
         choice = response.choices[0]
         text = choice.message.content or ""
@@ -75,12 +93,14 @@ class InferenceClient:
     ) -> AsyncIterator[dict]:
         """
         Streaming variant. Yields events:
-          {"type": "delta", "text": str}                        — a content token
-          {"type": "done",  "text": str, "tool_calls": list|None}  — final, once
+          {"type": "delta", "text": str}                                   — a content token
+          {"type": "done",  "text": str, "tool_calls": list|None, "error": bool}  — final, once
 
         Content deltas are emitted live. Tool calls are assembled across the
         stream and returned (fully) in the terminal "done" event, so callers
-        get the same tool_calls shape as chat().
+        get the same tool_calls shape as chat(). The done event carries an
+        `error` flag: when True the text is a transient fallback message and the
+        caller must NOT persist the turn to history or memory.
         """
         temperature = self._tool_temperature if tools else self._temperature
         kwargs: dict[str, Any] = {
@@ -120,8 +140,9 @@ class InferenceClient:
             log.error("Inference stream error: %s", exc)
             yield {
                 "type": "done",
-                "text": "I'm having trouble reaching my inference engine. Is llama.cpp running?",
+                "text": INFERENCE_ERROR_TEXT,
                 "tool_calls": None,
+                "error": True,
             }
             return
 
@@ -137,7 +158,7 @@ class InferenceClient:
                     "name": acc["name"],
                     "arguments": acc["arguments"] or "{}",
                 })
-        yield {"type": "done", "text": "".join(content_parts), "tool_calls": tool_calls}
+        yield {"type": "done", "text": "".join(content_parts), "tool_calls": tool_calls, "error": False}
 
     async def embed(self, text: str) -> list[float]:
         """Generate an embedding for memory storage."""

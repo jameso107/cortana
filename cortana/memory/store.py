@@ -1,6 +1,8 @@
 """Dual memory store: ChromaDB (episodic) + SQLite (structured)."""
 from __future__ import annotations
 
+import asyncio
+import itertools
 import logging
 import math
 import sqlite3
@@ -52,6 +54,10 @@ class MemoryStore:
         self._db_path = Path(cfg.memory.structured_path).expanduser()
         self._embedding_model = cfg.memory.embedding_model
         self._half_life_days = cfg.memory.decay_half_life_days
+        self._min_similarity = cfg.memory.min_similarity
+        self._min_query_words = cfg.memory.min_query_words
+        # Monotonic counter so two turns in the same instant get distinct doc ids.
+        self._id_counter = itertools.count()
         # llama.cpp exposes an OpenAI-compatible API; reuse the inference host/port.
         self._embeddings_base = f"http://{cfg.inference.host}:{cfg.inference.port}/v1"
         self._encrypt = cfg.safety.encrypt_memory
@@ -133,13 +139,22 @@ class MemoryStore:
 
         We over-fetch candidates, then score each by combining vector similarity
         with an exponential recency decay (half-life from config) so that recent
-        memories outweigh equally-similar older ones (PRD 4.4).
+        memories outweigh equally-similar older ones (PRD 4.4). Candidates below
+        a configurable similarity floor are dropped so an irrelevant top-n is
+        never injected, and very short / pronoun-only turns skip retrieval
+        entirely (their raw text is a poor query vector and history already
+        covers them).
         """
         if self._collection is None:
             return ""
+        if len(query.split()) < self._min_query_words:
+            return ""
         try:
             candidates = max(n_results * 4, n_results)
-            results = self._collection.query(
+            # Chroma's query() embeds + runs an HNSW search synchronously; keep it
+            # off the event loop so a slow embedding endpoint can't freeze the daemon.
+            results = await asyncio.to_thread(
+                self._collection.query,
                 query_texts=[query],
                 n_results=candidates,
                 include=["documents", "distances", "metadatas"],
@@ -155,6 +170,8 @@ class MemoryStore:
             scored = []
             for doc, dist, meta in zip(docs, dists, metas):
                 similarity = 1.0 - float(dist)          # cosine distance → similarity
+                if similarity < self._min_similarity:
+                    continue                            # below relevance floor — skip
                 recency = self._recency_weight(meta.get("ts"), now, half_life)
                 score = similarity * recency
                 scored.append((score, doc))
@@ -200,11 +217,17 @@ class MemoryStore:
         """Persist a conversation turn to episodic memory."""
         if self._collection is None:
             return
-        ts = datetime.utcnow().isoformat()
+        ts = datetime.now(timezone.utc).isoformat()
+        # Unique id (ts + counter) so two turns in the same instant don't collide
+        # and silently overwrite each other on add().
+        doc_id = f"{ts}#{next(self._id_counter)}"
         doc = f"[{ts}] User: {user_text}\nCortana: {assistant_text}"
         try:
-            # Store ts in metadata so recency-weighted retrieval is possible later.
-            self._collection.add(documents=[doc], ids=[ts], metadatas=[{"ts": ts}])
+            # add() is a synchronous C call; run it off the event loop.
+            await asyncio.to_thread(
+                self._collection.add,
+                documents=[doc], ids=[doc_id], metadatas=[{"ts": ts}],
+            )
         except Exception as exc:
             log.debug("Memory save error: %s", exc)
 
