@@ -32,3 +32,17 @@ ui/.vite/
 electron/node_modules/
 electron/dist/
 ui/dist/
+.vercel
+
+# Dependencies
+node_modules/
+
+# Next.js build output and cache
+.next/
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# Local environment files
+.env*
+!.env.example

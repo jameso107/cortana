@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,19 +11,19 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-class _LlamaEmbeddingFunction:
+class _OpenAIEmbeddingFunction:
     """
     Chroma embedding function backed by an OpenAI-compatible /v1/embeddings
-    endpoint (llama.cpp / a dedicated embedding server) running the configured
-    embedding model (PRD: nomic-embed-text).
+    endpoint running the configured OpenAI embedding model.
 
     If the endpoint is unreachable, MemoryStore falls back to Chroma's bundled
     local embedder, so memory keeps working fully offline.
     """
 
-    def __init__(self, base_url: str, model: str):
+    def __init__(self, base_url: str, model: str, api_key: str):
         self._url = base_url.rstrip("/") + "/embeddings"
         self._model = model
+        self._api_key = api_key
 
     # Chroma calls this as ef(input=[...]) and expects list[list[float]].
     def __call__(self, input: list[str]) -> list[list[float]]:  # noqa: A002 (Chroma's signature)
@@ -31,6 +32,7 @@ class _LlamaEmbeddingFunction:
         resp = httpx.post(
             self._url,
             json={"model": self._model, "input": input},
+            headers={"Authorization": f"Bearer {self._api_key}"},
             timeout=30,
         )
         resp.raise_for_status()
@@ -41,7 +43,7 @@ class _LlamaEmbeddingFunction:
 
     # Chroma >=0.5 requires a stable name for persistence.
     def name(self) -> str:
-        return f"llama:{self._model}"
+        return f"openai:{self._model}"
 
 
 class MemoryStore:
@@ -52,8 +54,8 @@ class MemoryStore:
         self._db_path = Path(cfg.memory.structured_path).expanduser()
         self._embedding_model = cfg.memory.embedding_model
         self._half_life_days = cfg.memory.decay_half_life_days
-        # llama.cpp exposes an OpenAI-compatible API; reuse the inference host/port.
-        self._embeddings_base = f"http://{cfg.inference.host}:{cfg.inference.port}/v1"
+        self._embeddings_base = "https://api.openai.com/v1"
+        self._openai_api_key = os.getenv(cfg.inference.api_key_env, "")
         self._encrypt = cfg.safety.encrypt_memory
         self._cipher = None
         self._chroma = None
@@ -99,7 +101,14 @@ class MemoryStore:
 
     def _resolve_embedding_function(self):
         """Use the configured embedding endpoint if it answers; else Chroma default."""
-        ef = _LlamaEmbeddingFunction(self._embeddings_base, self._embedding_model)
+        if not self._openai_api_key:
+            self._embeddings_backend = "chroma-default (local)"
+            return None
+        ef = _OpenAIEmbeddingFunction(
+            self._embeddings_base,
+            self._embedding_model,
+            self._openai_api_key,
+        )
         try:
             ef(["ping"])  # probe
             self._embeddings_backend = ef.name()
@@ -120,7 +129,11 @@ class MemoryStore:
             return
         self._chroma = chromadb.PersistentClient(path=str(self._episodic_path))
         ef = self._resolve_embedding_function()
-        kwargs = {"name": "episodic", "metadata": {"hnsw:space": "cosine"}}
+        # Chroma persists the embedding-function identity with a collection. Keep
+        # the legacy local collection untouched and start an OpenAI-backed v2
+        # collection instead of silently re-embedding old private memories.
+        collection_name = "episodic_openai_v2" if ef is not None else "episodic"
+        kwargs = {"name": collection_name, "metadata": {"hnsw:space": "cosine"}}
         if ef is not None:
             kwargs["embedding_function"] = ef
         self._collection = self._chroma.get_or_create_collection(**kwargs)

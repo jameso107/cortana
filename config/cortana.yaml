@@ -1,14 +1,11 @@
 # Cortana configuration
 inference:
-  host: localhost
-  port: 8080
-  model: Qwen3-30B-A3B-Q6_K.gguf
-  context_window: 16384
-  gpu_layers: 99
-  threads: 8
-  temperature: 0.7
-  tool_temperature: 0.2
-  flash_attention: true
+  model: gpt-5.5
+  api_key_env: OPENAI_API_KEY
+  reasoning_effort: medium
+  max_output_tokens: 6000
+  store: true
+  embeddings_model: text-embedding-3-small
 
 voice:
   # Voice is toggled from the UI (no wake word). See VoicePipeline.set_listening.
@@ -22,7 +19,7 @@ voice:
 memory:
   episodic_path: ~/.cortana/memory/chroma
   structured_path: ~/.cortana/memory/cortana.db
-  embedding_model: nomic-embed-text
+  embedding_model: text-embedding-3-small
   context_tokens: 2048        # tokens reserved for memory injection
   decay_half_life_days: 30
 

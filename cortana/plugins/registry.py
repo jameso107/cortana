@@ -163,6 +163,22 @@ class PluginRegistry:
     def get_tool_schemas(self) -> list[dict]:
         return [p.register() for p in self._plugins.values()]
 
+    def get_responses_tool_schemas(self) -> list[dict]:
+        """Convert legacy Chat Completions schemas to Responses API function tools."""
+        tools = []
+        for plugin in self._plugins.values():
+            function = plugin.register().get("function", {})
+            tools.append({
+                "type": "function",
+                "name": function.get("name", plugin.name),
+                "description": function.get("description", plugin.description),
+                "parameters": function.get("parameters", {"type": "object", "properties": {}}),
+                # Existing plugin schemas contain genuinely optional arguments. Keep
+                # non-strict mode until each schema is migrated to nullable-required fields.
+                "strict": False,
+            })
+        return tools
+
     async def dispatch(self, tool_calls: list[dict]) -> list[dict]:
         """Execute tool calls and return tool result messages."""
         results = []

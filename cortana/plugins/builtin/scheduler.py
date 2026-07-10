@@ -50,7 +50,8 @@ class Plugin(PluginBase):
                 created_at TEXT
             )
         """)
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
 
     # ── Tool interface ──────────────────────────────────────────────────────────
     def register(self) -> dict:

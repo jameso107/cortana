@@ -2,19 +2,20 @@
 from pathlib import Path
 from typing import Any
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel
+
+ROOT = Path(__file__).parent.parent
+load_dotenv(ROOT / ".env.local")
 
 
 class InferenceConfig(BaseModel):
-    host: str = "localhost"
-    port: int = 8080
-    model: str = "Qwen3-27B-Instruct-Q6_K_M.gguf"
-    context_window: int = 16384
-    gpu_layers: int = 99
-    threads: int = 8
-    temperature: float = 0.7
-    tool_temperature: float = 0.2
-    flash_attention: bool = True
+    model: str = "gpt-5.5"
+    api_key_env: str = "OPENAI_API_KEY"
+    reasoning_effort: str = "medium"
+    max_output_tokens: int = 6000
+    store: bool = True
+    embeddings_model: str = "text-embedding-3-small"
 
 
 class VoiceConfig(BaseModel):
@@ -29,7 +30,7 @@ class VoiceConfig(BaseModel):
 class MemoryConfig(BaseModel):
     episodic_path: str = "~/.cortana/memory/chroma"
     structured_path: str = "~/.cortana/memory/cortana.db"
-    embedding_model: str = "nomic-embed-text"
+    embedding_model: str = "text-embedding-3-small"
     context_tokens: int = 2048
     decay_half_life_days: int = 30
 
